@@ -15,9 +15,11 @@ import re
 from core.config import settings
 from db.session import get_engine
 from repositories import drafts as drafts_repo
+from repositories import orgs as orgs_repo
 from repositories import users as users_repo
 from services import ask as ask_service
 from services import ingest
+from services import raw_storage
 from services.file_extract import UnsupportedFileError, extract_text, file_kind
 from services.slack.api import SlackClient
 from services.slack.blocks import (
@@ -84,10 +86,21 @@ async def _post_preview(
     source: str,
     dm_channel: str,
     placeholder_ts: str | None = None,
+    original: tuple[bytes, str | None, str] | None = None,
 ) -> None:
     """Extract, stage a node_drafts row, and show the preview card (posting
-    a new message, or turning `placeholder_ts` into the card)."""
+    a new message, or turning `placeholder_ts` into the card).
+
+    `original` is (bytes, filename, content_type) of an uploaded file; a text
+    note's original is its text. Either is kept in Cloud Storage and its
+    path carried into node_pool.metadata.raw_storage_path on Confirm."""
     payload = await ingest.build_preview(user_id=user_id, raw_content=raw_content, source=source)
+    data, filename, content_type = original or (raw_content.encode("utf-8"), None, "text/plain; charset=utf-8")
+    raw_path = await asyncio.to_thread(
+        raw_storage.store_original, user_id=user_id, data=data, filename=filename, content_type=content_type
+    )
+    if raw_path:
+        payload["node_payload"].setdefault("metadata", {})["raw_storage_path"] = raw_path
 
     def _create():
         with get_engine().begin() as conn:
@@ -160,6 +173,7 @@ async def handle_file_shared(*, file_id: str, slack_user: str, channel_id: str) 
             source=name,
             dm_channel=channel_id,
             placeholder_ts=placeholder_ts,
+            original=(data, name, info.get("mimetype") or "application/octet-stream"),
         )
     except UnsupportedFileError as exc:
         await _report(client, channel_id, placeholder_ts, f"⚠️ {exc}")
@@ -213,6 +227,8 @@ async def handle_action(*, action_id: str, draft_id: str, slack_user: str, chann
     title = claimed["preview"]["preview"].get("title") or "Untitled"
 
     if action_id == DISCARD_ACTION:
+        raw_path = (claimed["preview"].get("node_payload") or {}).get("metadata", {}).get("raw_storage_path")
+        await asyncio.to_thread(raw_storage.discard_original, raw_path)
         await client.update_message(channel, message_ts, "Discarded.", status_blocks(title, "Discarded."))
         return
 
@@ -275,7 +291,14 @@ async def handle_ask(*, slack_user: str, response_url: str, question: str) -> No
         if not user_id:
             await client.respond(response_url, {"replace_original": True, "text": NOT_LINKED})
             return
-        result = await ask_service.answer_question(user_id, question)
+        def _org():
+            with get_engine().connect() as conn:
+                membership = orgs_repo.get_membership(conn, user_id)
+            return membership["org_id"] if membership else None
+
+        # Org scope whenever the user is in a team: their own notes, accepted
+        # shares, and everything in the team space.
+        result = await ask_service.answer_question(user_id, question, org_id=await asyncio.to_thread(_org))
         text = f"*Q:* {escape(question)}\n\n{_to_slack_mrkdwn(result.answer)}"
         if result.sources:
             text += "\n\n_Sources:_ " + " · ".join(f"[{s['n']}] {escape(s['title'])}" for s in result.sources)

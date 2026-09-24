@@ -36,5 +36,5 @@ def test_nodes_and_graph_are_personal_and_deduplicated(client, db):
     assert theirs not in {n["id"] for n in nodes}
     assert {n["id"] for n in graph["nodes"]} == {a, b}
     assert graph["connections"] == [
-        {"source_id": min(a, b), "target_id": max(a, b), "score": 1.0, "key_count": 2}
+        {"source_id": min(a, b), "target_id": max(a, b), "score": 1.0, "key_count": 2, "is_share": False, "cross_member": False}
     ]

@@ -69,7 +69,8 @@ def db(database_url, monkeypatch):
     yield engine
     with engine.begin() as conn:
         conn.exec_driver_sql(
-            "TRUNCATE connection, node_keys, key_pool, node_drafts, retrieval_log, node_pool, auth.users CASCADE"
+            "TRUNCATE notifications, connection, share_node, org_members, orgs, node_keys, key_pool, node_drafts, "
+            "retrieval_log, node_pool, auth.users CASCADE"
         )
     engine.dispose()
     db_session.get_engine.cache_clear()
@@ -134,6 +135,7 @@ class FakeSlack:
     def __init__(self):
         self.calls: list[tuple[str, dict]] = []
         self.emails: dict[str, str] = {}
+        self.names: dict[str, str] = {}
         self.files: dict[str, dict] = {}
         self.file_bytes: dict[str, bytes] = {}
         self._ts = 1000
@@ -163,6 +165,15 @@ class FakeSlack:
     async def user_email(self, slack_user_id):
         return self.emails.get(slack_user_id)
 
+    async def user_name(self, slack_user_id):
+        return self.names.get(slack_user_id, slack_user_id)
+
+    async def lookup_user_by_email(self, email):
+        return next((u for u, e in self.emails.items() if e.lower() == email.lower()), None)
+
+    async def open_view(self, trigger_id, view):
+        self.calls.append(("open_view", {"trigger_id": trigger_id, "view": view}))
+
     async def file_info(self, file_id):
         return self.files[file_id]
 
@@ -175,12 +186,40 @@ class FakeSlack:
 
 @pytest.fixture
 def slack(monkeypatch):
-    from services.slack import handlers
+    from services.slack import handlers, team_handlers
 
     fake = FakeSlack()
     monkeypatch.setattr(handlers, "slack_client", lambda: fake)
     monkeypatch.setattr(handlers, "_user_cache", {})
+    monkeypatch.setattr(team_handlers, "_slack_id_cache", {})
     monkeypatch.setattr(settings, "SLACK_SIGNING_SECRET", SIGNING_SECRET)
+    return fake
+
+
+# ---------------------------------------------------------------- storage
+
+class FakeRawStorage:
+    def __init__(self):
+        self.objects: dict[str, tuple[bytes, str]] = {}
+        self.deleted: list[str] = []
+
+    def upload(self, path, data, content_type):
+        self.objects[path] = (data, content_type)
+
+    def delete(self, path):
+        self.deleted.append(path)
+        self.objects.pop(path, None)
+
+    def signed_url(self, path, ttl_seconds):
+        return f"https://storage.example/{path}?ttl={ttl_seconds}"
+
+
+@pytest.fixture
+def raw_store(monkeypatch):
+    from services import raw_storage
+
+    fake = FakeRawStorage()
+    monkeypatch.setattr(raw_storage, "get_raw_storage", lambda: fake)
     return fake
 
 

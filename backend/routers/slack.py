@@ -14,6 +14,8 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, status
 
 from core.config import settings
 from services.slack import handlers
+from services.slack import share_blocks as sb
+from services.slack import team_handlers
 from services.slack.signature import is_valid_slack_signature
 
 logger = logging.getLogger(__name__)
@@ -23,8 +25,14 @@ router = APIRouter(prefix="/slack")
 HELP_TEXT = (
     "*Neurix commands*\n"
     "• `/neurix save <text>` — save a note (you'll get a preview to confirm)\n"
-    "• `/neurix ask <question>` — ask a question answered from your notes\n"
-    "• Send a file (PDF, image, .docx, .xlsx, .txt, .md) to me in a DM to save it"
+    "• `/neurix ask <question>` — ask a question answered from your notes (and your team's)\n"
+    "• Send a file (PDF, image, .docx, .xlsx, .txt, .md) to me in a DM to save it\n"
+    "• `/neurix team create <name>` · `/neurix team invite` · `/neurix team list`\n"
+    "• `/neurix share` — share a note with a person (they accept or decline)\n"
+    "• `/neurix share-team` — add a note to your team space\n"
+    "• `/neurix stats` — what's new, plus insights for you and your team\n"
+    "• `/neurix raw-access <note> @person|team on|off` — let them open the original file\n"
+    "• `/neurix file <note>` — get a download link for a note's original file"
 )
 
 
@@ -66,6 +74,40 @@ async def commands(request: Request, background_tasks: BackgroundTasks):
         background_tasks.add_task(handlers.handle_ask, slack_user=slack_user, response_url=response_url, question=rest)
         return {"response_type": "ephemeral", "text": "🔎 Searching your notes..."}
 
+    trigger_id = form.get("trigger_id", "")
+    user_args = {"slack_user": slack_user, "response_url": response_url}
+
+    if subcommand == "team":
+        action, _, name = rest.partition(" ")
+        action = action.lower()
+        if action == "create":
+            background_tasks.add_task(team_handlers.handle_team_create, name=name, **user_args)
+            return {"response_type": "ephemeral", "text": "⏳ Creating your team..."}
+        if action == "invite":
+            background_tasks.add_task(team_handlers.open_team_invite, trigger_id=trigger_id, **user_args)
+            return {"response_type": "ephemeral", "text": "⏳ Opening..."}
+        if action in ("", "list"):
+            background_tasks.add_task(team_handlers.handle_team_list, **user_args)
+            return {"response_type": "ephemeral", "text": "⏳ Loading your team..."}
+
+    if subcommand in ("share", "share-team"):
+        background_tasks.add_task(
+            team_handlers.open_share, trigger_id=trigger_id, team=subcommand == "share-team", **user_args
+        )
+        return {"response_type": "ephemeral", "text": "⏳ Opening..."}
+
+    if subcommand == "stats":
+        background_tasks.add_task(team_handlers.handle_stats, **user_args)
+        return {"response_type": "ephemeral", "text": "📊 Crunching your stats..."}
+
+    if subcommand == "raw-access":
+        background_tasks.add_task(team_handlers.handle_raw_access, args=rest, **user_args)
+        return {"response_type": "ephemeral", "text": "⏳ Updating access..."}
+
+    if subcommand == "file":
+        background_tasks.add_task(team_handlers.handle_file, args=rest, **user_args)
+        return {"response_type": "ephemeral", "text": "⏳ Looking up the file..."}
+
     return {"response_type": "ephemeral", "text": HELP_TEXT}
 
 
@@ -73,19 +115,64 @@ async def commands(request: Request, background_tasks: BackgroundTasks):
 async def interactions(request: Request, background_tasks: BackgroundTasks):
     form = _form(await _verified_body(request))
     payload = json.loads(form.get("payload") or "{}")
+    slack_user = (payload.get("user") or {}).get("id", "")
+
+    if payload.get("type") == "view_submission":
+        _submit_view(payload.get("view") or {}, slack_user, background_tasks)
+        return {}  # closes the modal; the outcome is DM'd to the submitter
+
     if payload.get("type") != "block_actions" or not payload.get("actions"):
         return {}
 
     action = payload["actions"][0]
-    background_tasks.add_task(
-        handlers.handle_action,
-        action_id=action.get("action_id", ""),
-        draft_id=action.get("value", ""),
-        slack_user=(payload.get("user") or {}).get("id", ""),
-        channel=(payload.get("container") or {}).get("channel_id") or (payload.get("channel") or {}).get("id", ""),
-        message_ts=(payload.get("container") or {}).get("message_ts") or (payload.get("message") or {}).get("ts", ""),
-    )
+    action_id = action.get("action_id", "")
+    coords = {
+        "slack_user": slack_user,
+        "channel": (payload.get("container") or {}).get("channel_id") or (payload.get("channel") or {}).get("id", ""),
+        "message_ts": (payload.get("container") or {}).get("message_ts") or (payload.get("message") or {}).get("ts", ""),
+    }
+    if action_id in sb.SHARE_ACTIONS:
+        background_tasks.add_task(
+            team_handlers.handle_share_action, action_id=action_id, share_id=action.get("value", ""), **coords
+        )
+    elif action_id in (handlers.CONFIRM_ACTION, handlers.EDIT_ACTION, handlers.DISCARD_ACTION):
+        background_tasks.add_task(handlers.handle_action, action_id=action_id, draft_id=action.get("value", ""), **coords)
+    # Anything else (e.g. picking an option inside a modal) needs no work.
     return {}
+
+
+def _submit_view(view: dict, slack_user: str, background_tasks: BackgroundTasks) -> None:
+    values = (view.get("state") or {}).get("values") or {}
+
+    def field(block: str) -> dict:
+        return (values.get(block) or {}).get(block) or {}
+
+    def option(block: str) -> str:
+        return (field(block).get("selected_option") or {}).get("value", "")
+
+    callback_id = view.get("callback_id")
+    if callback_id == sb.SHARE_MODAL:
+        background_tasks.add_task(
+            team_handlers.submit_share,
+            slack_user=slack_user,
+            node_id=option(sb.NODE_BLOCK),
+            recipient_slack=field(sb.RECIPIENT_BLOCK).get("selected_user") or "",
+            message=(field(sb.MESSAGE_BLOCK).get("value") or "").strip() or None,
+        )
+    elif callback_id == sb.SHARE_TEAM_MODAL:
+        background_tasks.add_task(
+            team_handlers.submit_share_team,
+            slack_user=slack_user,
+            node_id=option(sb.NODE_BLOCK),
+            scope=option(sb.SCOPE_BLOCK) or "admin",
+            targets_slack=field(sb.TARGETS_BLOCK).get("selected_users") or [],
+        )
+    elif callback_id == sb.TEAM_INVITE_MODAL:
+        background_tasks.add_task(
+            team_handlers.submit_team_invite,
+            slack_user=slack_user,
+            member_slack=field(sb.MEMBER_BLOCK).get("selected_user") or "",
+        )
 
 
 @router.post("/events")

@@ -3,8 +3,10 @@ import type { CSSProperties, ReactNode } from "react";
 import { signOut } from "../lib/firebase";
 import { healthApi } from "../lib/api/health";
 import { nodesApi, type GraphResponse, type NodeListItem } from "../lib/api/nodes";
+import { teamApi, type TeamGraphResponse } from "../lib/api/team";
 import NodeList from "../components/NodeList";
 import StaticGraph from "../components/StaticGraph";
+import TeamGraph from "../components/TeamGraph";
 
 // While any note is still PROCESSING, re-fetch so its badge clears (and its
 // connections appear) without a manual reload.
@@ -25,6 +27,7 @@ export default function Shell() {
   const [health, setHealth] = useState<string>("checking...");
   const [nodes, setNodes] = useState<NodeListItem[] | null>(null);
   const [graph, setGraph] = useState<GraphResponse | null>(null);
+  const [team, setTeam] = useState<TeamGraphResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -36,9 +39,10 @@ export default function Shell() {
 
   const load = useCallback(async () => {
     try {
-      const [list, graphData] = await Promise.all([nodesApi.list(), nodesApi.graph()]);
+      const [list, graphData, teamData] = await Promise.all([nodesApi.list(), nodesApi.graph(), teamApi.graph()]);
       setNodes(list.nodes);
       setGraph(graphData);
+      setTeam(teamData);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load notes");
@@ -74,13 +78,18 @@ export default function Shell() {
         <Panel title="Graph" style={{ gridColumn: "1 / -1" }}>
           {graph ? <StaticGraph graph={graph} /> : <p>Loading...</p>}
         </Panel>
+        <Panel title="Team graph" style={{ gridColumn: "1 / -1" }}>
+          {team ? <TeamGraph team={team} /> : <p>Loading...</p>}
+        </Panel>
         <Panel title="Ask">
           <p>
             Ask from Slack with <code>/neurix ask &lt;question&gt;</code>. A web Ask panel comes later.
           </p>
         </Panel>
         <Panel title="Insights">
-          <p>Coming soon.</p>
+          <p>
+            Run <code>/neurix stats</code> in Slack for your and your team's insights and what's new.
+          </p>
         </Panel>
       </div>
     </div>

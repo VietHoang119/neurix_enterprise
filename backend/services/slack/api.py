@@ -62,6 +62,25 @@ class SlackClient:
         data = await self.call("users.info", {"user": slack_user_id}, form=True)
         return (data.get("user") or {}).get("profile", {}).get("email")
 
+    async def user_name(self, slack_user_id: str) -> str | None:
+        data = await self.call("users.info", {"user": slack_user_id}, form=True)
+        user = data.get("user") or {}
+        profile = user.get("profile") or {}
+        return profile.get("display_name") or profile.get("real_name") or user.get("name")
+
+    async def lookup_user_by_email(self, email: str) -> str | None:
+        """Slack user id for an email (users:read.email), or None."""
+        try:
+            data = await self.call("users.lookupByEmail", {"email": email}, form=True)
+        except SlackApiError as exc:
+            if "users_not_found" in str(exc):
+                return None
+            raise
+        return (data.get("user") or {}).get("id")
+
+    async def open_view(self, trigger_id: str, view: dict[str, Any]) -> None:
+        await self.call("views.open", {"trigger_id": trigger_id, "view": view})
+
     async def file_info(self, file_id: str) -> dict[str, Any]:
         data = await self.call("files.info", {"file": file_id}, form=True)
         return data["file"]

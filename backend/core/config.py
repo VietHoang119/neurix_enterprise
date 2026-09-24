@@ -45,6 +45,12 @@ class Settings(BaseSettings):
     # Hard cap for file ingest (v1: PDF, txt, md, docx, xlsx, images).
     SLACK_MAX_FILE_BYTES: int = 20 * 1024 * 1024
 
+    # Cloud Storage bucket for original ingest content (raw/{uid}/...), which
+    # `view_raw` grants access to. Unset: nothing is stored and
+    # `/neurix file` says so.
+    RAW_STORAGE_BUCKET: str | None = None
+    RAW_URL_TTL_SECONDS: int = 600
+
     # Gemini — same thresholds as neurix's app/core/settings.py.
     GOOGLE_API_KEY: str | None = None
     # Chat model used by every generate call (extraction, file OCR, ask).

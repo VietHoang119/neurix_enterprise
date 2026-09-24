@@ -1,4 +1,5 @@
-"""/neurix ask — personal-scope retrieval + grounded Gemini answer.
+"""/neurix ask — retrieval (personal, or org scope for team members) +
+grounded Gemini answer.
 
 Retrieval mirrors neurix's ChatAgent `retrieve_user_data` tool
 (app/agents/chat_agent.py): embed the question, candidate generation via
@@ -28,7 +29,7 @@ logger = logging.getLogger(__name__)
 # Adapted from neurix's ChatAgent prompt (RULE 1 "user data is the primary
 # source of truth", RULE 3 "be explicit about sources"), minus the web
 # fallback and with mandatory per-claim citations.
-ANSWER_PROMPT = """You are Neurix, an assistant that answers questions strictly from the user's own saved notes.
+ANSWER_PROMPT = """You are Neurix, an assistant that answers questions strictly from the user's saved notes (their own, and notes shared with them or their team).
 
 Rules:
 - Answer ONLY from the numbered SOURCES below. Do not use outside knowledge.
@@ -71,34 +72,36 @@ def cited_indices(answer: str, count: int) -> list[int]:
     return seen
 
 
-def _retrieve(user_id: str, question: str, query_vector: list[float]):
+def _retrieve(user_id: str, question: str, query_vector: list[float], org_id: str | None):
     with get_engine().connect() as conn:
         candidates = nodes_repo.retrieve_candidate_nodes(
-            conn, user_id=user_id, query_text=question, query_embedding=query_vector
+            conn, user_id=user_id, query_text=question, query_embedding=query_vector, org_id=org_id
         )
         node_keys_map = keys_repo.get_keys_for_nodes(conn, [c["id"] for c in candidates])
     return candidates, node_keys_map
 
 
-def _log(user_id: str, question: str, used_node_ids: list[str]) -> None:
+def _log(user_id: str, question: str, used_node_ids: list[str], org_id: str | None) -> None:
     with get_engine().begin() as conn:
-        connections_repo.log_retrieval(conn, user_id=user_id, question=question, used_node_ids=used_node_ids)
+        connections_repo.log_retrieval(
+            conn, user_id=user_id, question=question, used_node_ids=used_node_ids, org_id=org_id
+        )
 
 
-async def answer_question(user_id: str, question: str) -> AskResult:
+async def answer_question(user_id: str, question: str, org_id: str | None = None) -> AskResult:
     query_vector = await llm.embed_query(question)
-    candidates, node_keys_map = await asyncio.to_thread(_retrieve, user_id, question, query_vector)
+    candidates, node_keys_map = await asyncio.to_thread(_retrieve, user_id, question, query_vector, org_id)
 
     ranked = rank_candidates(question, query_vector, candidates, node_keys_map)
     selected = select_top_nodes(ranked, max_nodes=3, gap_ratio=0.8)
     selected = [r for r in selected if r.score >= settings.CHAT_RELEVANCE_THRESHOLD]
     logger.info(
-        "ASK_RETRIEVAL | user_id=%s | candidates=%d | selected=%s",
-        user_id, len(candidates), [(r.node["id"], round(r.score, 3)) for r in selected],
+        "ASK_RETRIEVAL | user_id=%s | org_id=%s | candidates=%d | selected=%s",
+        user_id, org_id, len(candidates), [(r.node["id"], round(r.score, 3)) for r in selected],
     )
 
     if not selected:
-        await asyncio.to_thread(_log, user_id, question, [])
+        await asyncio.to_thread(_log, user_id, question, [], org_id)
         return AskResult(answer=NO_RESULTS_ANSWER, sources=[])
 
     response = await llm.get_chat_model().ainvoke(
@@ -117,5 +120,5 @@ async def answer_question(user_id: str, question: str) -> AskResult:
         }
         for n in cited_indices(answer, len(selected))
     ]
-    await asyncio.to_thread(_log, user_id, question, [s["id"] for s in sources])
+    await asyncio.to_thread(_log, user_id, question, [s["id"] for s in sources], org_id)
     return AskResult(answer=answer.strip(), sources=sources)

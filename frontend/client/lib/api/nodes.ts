@@ -15,6 +15,10 @@ export interface GraphNode {
   id: string;
   title: string;
   status: NodeStatus;
+  /** user_id of the note's original owner (shared notes are references, not copies). */
+  owner_id: string;
+  /** Owned by someone else: reached through an accepted or team share. */
+  shared: boolean;
 }
 
 /** One edge per node pair: strongest score across the keys they share. */
@@ -23,6 +27,10 @@ export interface GraphConnection {
   target_id: string;
   score: number;
   key_count: number;
+  /** Formed by a share (a persisted share connection). */
+  is_share: boolean;
+  /** Links notes of two different owners. */
+  cross_member: boolean;
 }
 
 export interface GraphResponse {

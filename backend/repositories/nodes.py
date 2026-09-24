@@ -97,6 +97,19 @@ def list_nodes(conn: Connection, user_id: str) -> list[dict[str, Any]]:
     ]
 
 
+def recent_ready_nodes(conn: Connection, user_id: str, limit: int = 100) -> list[dict[str, Any]]:
+    """The user's own READY nodes, newest first — the share pickers' options
+    (Slack static_select allows at most 100)."""
+    rows = conn.execute(
+        text(
+            "SELECT id, coalesce(title, ai_title, 'Untitled') AS title FROM node_pool "
+            "WHERE user_id = :user_id AND status = 'READY' ORDER BY created_at DESC LIMIT :limit"
+        ),
+        {"user_id": user_id, "limit": limit},
+    ).all()
+    return [{"id": str(r.id), "title": r.title} for r in rows]
+
+
 def search_similar_nodes(
     conn: Connection, *, user_id: str, query_vector: list[float], similarity_threshold: float, limit: int
 ) -> list[dict[str, Any]]:
@@ -117,29 +130,45 @@ def search_similar_nodes(
 
 
 def retrieve_candidate_nodes(
-    conn: Connection, *, user_id: str, query_text: str, query_embedding: list[float], match_count: int = 30
+    conn: Connection,
+    *,
+    user_id: str,
+    query_text: str,
+    query_embedding: list[float],
+    match_count: int = 30,
+    org_id: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Personal-scope candidate generation via retrieve_candidate_nodes.
+    """Candidate generation via retrieve_candidate_nodes: the user's own
+    nodes, nodes from accepted person shares, and — with `org_id` — every
+    node in that org's team space.
 
-    org_id is passed explicitly as NULL: 0003 added a 7-arg overload with
-    `org_id DEFAULT NULL` next to 0001's 6-arg version, so a 6-arg call is
-    rejected by Postgres as "function ... is not unique". With org_id NULL
-    the 7-arg body is identical to the 6-arg one (its shared_nodes CTE
-    reduces to the shared_user_id match only).
+    org_id is always passed (NULL for personal scope): 0003 added a 7-arg
+    overload with `org_id DEFAULT NULL` next to 0001's 6-arg version, so a
+    6-arg call is rejected by Postgres as "function ... is not unique". With
+    org_id NULL the 7-arg body is identical to the 6-arg one (its
+    shared_nodes CTE reduces to the shared_user_id match only).
     """
     rows = conn.execute(
         text(
-            "SELECT id, title, ai_title, summary, summary_vec, metadata, created_at, "
+            "SELECT id, user_id, title, ai_title, summary, summary_vec, metadata, created_at, "
             "source_scope, candidate_type, similarity, lexical_rank "
             "FROM public.retrieve_candidate_nodes(CAST(:user_id AS uuid), CAST(:query_text AS text), "
-            "CAST(:vec AS vector), 'merged'::text, CAST(:match_count AS integer), 'en'::text, NULL::uuid)"
+            "CAST(:vec AS vector), 'merged'::text, CAST(:match_count AS integer), 'en'::text, "
+            "CAST(:org_id AS uuid))"
         ),
-        {"user_id": user_id, "query_text": query_text, "vec": to_pgvector(query_embedding), "match_count": match_count},
+        {
+            "user_id": user_id,
+            "query_text": query_text,
+            "vec": to_pgvector(query_embedding),
+            "match_count": match_count,
+            "org_id": org_id,
+        },
     ).all()
     results = []
     for r in rows:
         data = dict(r._mapping)
         data["id"] = str(data["id"])
+        data["user_id"] = str(data["user_id"])
         data["summary_vec"] = from_pgvector(data["summary_vec"])
         data["metadata"] = data["metadata"] or {}
         if isinstance(data["metadata"], str):

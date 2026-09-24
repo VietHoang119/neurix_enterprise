@@ -45,9 +45,16 @@ class Settings(BaseSettings):
     # Hard cap for file ingest (v1: PDF, txt, md, docx, xlsx, images).
     SLACK_MAX_FILE_BYTES: int = 20 * 1024 * 1024
 
-    # Gemini — same models and thresholds as neurix's app/core/settings.py.
+    # Gemini — same thresholds as neurix's app/core/settings.py.
     GOOGLE_API_KEY: str | None = None
-    DEFAULT_MODEL: str = "gemini-2.5-flash"
+    # Chat model used by every generate call (extraction, file OCR, ask).
+    # Plain Cloud Run env vars, not secrets, so a Google deprecation is an
+    # env-var update rather than a code change.
+    GEMINI_MODEL: str = "gemini-3.6-flash"
+    # Comma-separated models tried in order after GEMINI_MODEL, only when a
+    # model answers 404 NotFound (see core/llm.py). GEMINI_MODEL itself may
+    # appear here too; duplicates are ignored.
+    GEMINI_MODEL_FALLBACKS: str = "gemini-3.6-flash,gemini-3.5-flash"
     EMBEDDING_MODEL: str = "models/gemini-embedding-001"
     GEMINI_EMBEDDING_DIM: int = 768
     SIMILARITY_THRESHOLD: float = 0.1  # KeysExtractorAgent's similar-node lookup

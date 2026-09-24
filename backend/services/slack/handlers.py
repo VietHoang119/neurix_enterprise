@@ -204,6 +204,12 @@ async def handle_action(*, action_id: str, draft_id: str, slack_user: str, chann
             return drafts_repo.get_draft(conn, draft_id)
 
     draft = await asyncio.to_thread(_get)
+    # TEMP (edit-flow diagnosis): which button reached the handler.
+    logger.info(
+        "SLACK_ACTION | action_id=%s | draft_id=%s | channel=%s | message_ts=%s | draft_found=%s | summary_edited=%s",
+        action_id, draft_id, channel, message_ts, draft is not None,
+        bool(draft and draft["preview"].get("summary_edited")),
+    )
     if draft is None:
         await client.post_ephemeral(channel, slack_user, "This preview was already confirmed or discarded.")
         return
@@ -259,12 +265,23 @@ async def handle_thread_reply(*, channel: str, thread_ts: str, slack_user: str, 
             return drafts_repo.find_draft_by_slack_message(conn, channel=channel, ts=thread_ts)
 
     draft = await asyncio.to_thread(_find)
+    # TEMP (edit-flow diagnosis): confirm the reply reached this handler and
+    # whether it matched a pending draft. raw_text truncated on purpose.
+    logger.info(
+        "EDIT_REPLY_RECEIVED | channel=%s | thread_ts=%s | draft_id=%s | raw_text=%r",
+        channel, thread_ts, draft["id"] if draft else None, (text or "")[:200],
+    )
     if draft is None or (draft["preview"].get("slack") or {}).get("user") != slack_user:
+        logger.info(
+            "EDIT_REPLY_IGNORED | thread_ts=%s | reason=%s",
+            thread_ts, "no_pending_draft_for_thread" if draft is None else "not_draft_owner",
+        )
         return  # not a reply to a pending preview of this user
 
     client = slack_client()
     payload = draft["preview"]
     changes = apply_edit(payload, text)
+    logger.info("EDIT_REPLY_PARSED | draft_id=%s | changes=%s", draft["id"], changes)  # TEMP
     if not changes:
         await client.post_message(channel, "No changes detected. " + EDIT_INSTRUCTIONS, thread_ts=thread_ts)
         return

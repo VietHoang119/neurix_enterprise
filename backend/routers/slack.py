@@ -6,6 +6,7 @@ acknowledge — real work goes to background tasks so Slack's 3-second limit
 is always met.
 """
 
+import functools
 import json
 import logging
 from urllib.parse import parse_qs
@@ -36,6 +37,21 @@ HELP_TEXT = (
 )
 
 
+def _logged(task):
+    """Background tasks run after Slack has been acked, so an exception has
+    nowhere to go but the log. Log it with its full traceback here, once, for
+    every Slack flow — a failure must never be silent."""
+
+    @functools.wraps(task)
+    async def run(**kwargs):
+        try:
+            await task(**kwargs)
+        except Exception:
+            logger.exception("SLACK_TASK_FAILED | task=%s | args=%s", task.__name__, kwargs)
+
+    return run
+
+
 async def _verified_body(request: Request) -> bytes:
     body = await request.body()
     if not is_valid_slack_signature(
@@ -62,7 +78,7 @@ async def commands(request: Request, background_tasks: BackgroundTasks):
 
     if subcommand == "save" and rest:
         background_tasks.add_task(
-            handlers.handle_save,
+            _logged(handlers.handle_save),
             slack_user=slack_user,
             channel_id=form.get("channel_id", ""),
             response_url=response_url,
@@ -71,7 +87,7 @@ async def commands(request: Request, background_tasks: BackgroundTasks):
         return {"response_type": "ephemeral", "text": "⏳ Extracting..."}
 
     if subcommand == "ask" and rest:
-        background_tasks.add_task(handlers.handle_ask, slack_user=slack_user, response_url=response_url, question=rest)
+        background_tasks.add_task(_logged(handlers.handle_ask), slack_user=slack_user, response_url=response_url, question=rest)
         return {"response_type": "ephemeral", "text": "🔎 Searching your notes..."}
 
     trigger_id = form.get("trigger_id", "")
@@ -81,31 +97,31 @@ async def commands(request: Request, background_tasks: BackgroundTasks):
         action, _, name = rest.partition(" ")
         action = action.lower()
         if action == "create":
-            background_tasks.add_task(team_handlers.handle_team_create, name=name, **user_args)
+            background_tasks.add_task(_logged(team_handlers.handle_team_create), name=name, **user_args)
             return {"response_type": "ephemeral", "text": "⏳ Creating your team..."}
         if action == "invite":
-            background_tasks.add_task(team_handlers.open_team_invite, trigger_id=trigger_id, **user_args)
+            background_tasks.add_task(_logged(team_handlers.open_team_invite), trigger_id=trigger_id, **user_args)
             return {"response_type": "ephemeral", "text": "⏳ Opening..."}
         if action in ("", "list"):
-            background_tasks.add_task(team_handlers.handle_team_list, **user_args)
+            background_tasks.add_task(_logged(team_handlers.handle_team_list), **user_args)
             return {"response_type": "ephemeral", "text": "⏳ Loading your team..."}
 
     if subcommand in ("share", "share-team"):
         background_tasks.add_task(
-            team_handlers.open_share, trigger_id=trigger_id, team=subcommand == "share-team", **user_args
+            _logged(team_handlers.open_share), trigger_id=trigger_id, team=subcommand == "share-team", **user_args
         )
         return {"response_type": "ephemeral", "text": "⏳ Opening..."}
 
     if subcommand == "stats":
-        background_tasks.add_task(team_handlers.handle_stats, **user_args)
+        background_tasks.add_task(_logged(team_handlers.handle_stats), **user_args)
         return {"response_type": "ephemeral", "text": "📊 Crunching your stats..."}
 
     if subcommand == "raw-access":
-        background_tasks.add_task(team_handlers.handle_raw_access, args=rest, **user_args)
+        background_tasks.add_task(_logged(team_handlers.handle_raw_access), args=rest, **user_args)
         return {"response_type": "ephemeral", "text": "⏳ Updating access..."}
 
     if subcommand == "file":
-        background_tasks.add_task(team_handlers.handle_file, args=rest, **user_args)
+        background_tasks.add_task(_logged(team_handlers.handle_file), args=rest, **user_args)
         return {"response_type": "ephemeral", "text": "⏳ Looking up the file..."}
 
     return {"response_type": "ephemeral", "text": HELP_TEXT}
@@ -133,10 +149,10 @@ async def interactions(request: Request, background_tasks: BackgroundTasks):
     }
     if action_id in sb.SHARE_ACTIONS:
         background_tasks.add_task(
-            team_handlers.handle_share_action, action_id=action_id, share_id=action.get("value", ""), **coords
+            _logged(team_handlers.handle_share_action), action_id=action_id, share_id=action.get("value", ""), **coords
         )
     elif action_id in (handlers.CONFIRM_ACTION, handlers.EDIT_ACTION, handlers.DISCARD_ACTION):
-        background_tasks.add_task(handlers.handle_action, action_id=action_id, draft_id=action.get("value", ""), **coords)
+        background_tasks.add_task(_logged(handlers.handle_action), action_id=action_id, draft_id=action.get("value", ""), **coords)
     # Anything else (e.g. picking an option inside a modal) needs no work.
     return {}
 
@@ -153,7 +169,7 @@ def _submit_view(view: dict, slack_user: str, background_tasks: BackgroundTasks)
     callback_id = view.get("callback_id")
     if callback_id == sb.SHARE_MODAL:
         background_tasks.add_task(
-            team_handlers.submit_share,
+            _logged(team_handlers.submit_share),
             slack_user=slack_user,
             node_id=option(sb.NODE_BLOCK),
             recipient_slack=field(sb.RECIPIENT_BLOCK).get("selected_user") or "",
@@ -161,7 +177,7 @@ def _submit_view(view: dict, slack_user: str, background_tasks: BackgroundTasks)
         )
     elif callback_id == sb.SHARE_TEAM_MODAL:
         background_tasks.add_task(
-            team_handlers.submit_share_team,
+            _logged(team_handlers.submit_share_team),
             slack_user=slack_user,
             node_id=option(sb.NODE_BLOCK),
             scope=option(sb.SCOPE_BLOCK) or "admin",
@@ -169,7 +185,7 @@ def _submit_view(view: dict, slack_user: str, background_tasks: BackgroundTasks)
         )
     elif callback_id == sb.TEAM_INVITE_MODAL:
         background_tasks.add_task(
-            team_handlers.submit_team_invite,
+            _logged(team_handlers.submit_team_invite),
             slack_user=slack_user,
             member_slack=field(sb.MEMBER_BLOCK).get("selected_user") or "",
         )
@@ -208,7 +224,7 @@ async def events(request: Request, background_tasks: BackgroundTasks):
         and event.get("thread_ts") != event.get("ts")
     ):
         background_tasks.add_task(
-            handlers.handle_thread_reply,
+            _logged(handlers.handle_thread_reply),
             channel=event.get("channel", ""),
             thread_ts=event["thread_ts"],
             slack_user=event.get("user", ""),
@@ -225,7 +241,7 @@ async def events(request: Request, background_tasks: BackgroundTasks):
     elif etype == "file_shared" and (event.get("channel_id") or "").startswith("D"):
         # DMs with the bot only — files shared in channels are never ingested.
         background_tasks.add_task(
-            handlers.handle_file_shared,
+            _logged(handlers.handle_file_shared),
             file_id=event.get("file_id") or (event.get("file") or {}).get("id", ""),
             slack_user=event.get("user_id", ""),
             channel_id=event["channel_id"],

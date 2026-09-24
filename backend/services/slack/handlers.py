@@ -197,6 +197,18 @@ async def _report(client: SlackClient, channel: str, ts: str | None, text: str) 
 # --------------------------------------------------------------------------
 
 async def handle_action(*, action_id: str, draft_id: str, slack_user: str, channel: str, message_ts: str) -> None:
+    try:
+        await _handle_action(
+            action_id=action_id, draft_id=draft_id, slack_user=slack_user, channel=channel, message_ts=message_ts
+        )
+    except Exception:
+        logger.exception(
+            "SLACK_ACTION_FAILED | action_id=%s | draft_id=%s | channel=%s | message_ts=%s",
+            action_id, draft_id, channel, message_ts,
+        )
+
+
+async def _handle_action(*, action_id: str, draft_id: str, slack_user: str, channel: str, message_ts: str) -> None:
     client = slack_client()
 
     def _get():
@@ -218,7 +230,11 @@ async def handle_action(*, action_id: str, draft_id: str, slack_user: str, chann
         return
 
     if action_id == EDIT_ACTION:
+        # TEMP (edit-flow diagnosis): brackets the Slack call, so a hang
+        # (no DONE, no FAILED) is distinguishable from an exception.
+        logger.info("SLACK_EDIT_EPHEMERAL_START | draft_id=%s | channel=%s | thread_ts=%s", draft_id, channel, message_ts)
         await client.post_ephemeral(channel, slack_user, EDIT_INSTRUCTIONS, thread_ts=message_ts)
+        logger.info("SLACK_EDIT_EPHEMERAL_DONE | draft_id=%s", draft_id)
         return
     if action_id not in (CONFIRM_ACTION, DISCARD_ACTION):
         return
@@ -251,6 +267,7 @@ async def handle_action(*, action_id: str, draft_id: str, slack_user: str, chann
         result = await ingest.process_node(confirmed)
         final = ingest.done_message(result)
     except Exception:
+        logger.exception("SLACK_PROCESSING_FAILED | draft_id=%s", draft_id)
         final = "⚠️ Saved, but processing failed. The note is marked as failed."
     await client.update_message(channel, message_ts, final, status_blocks(title, escape(final)))
 

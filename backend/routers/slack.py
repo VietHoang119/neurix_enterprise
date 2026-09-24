@@ -190,6 +190,15 @@ async def events(request: Request, background_tasks: BackgroundTasks):
     event = data.get("event") or {}
     etype = event.get("type")
 
+    # TEMP (edit-flow diagnosis): every DM message event, and whether it is
+    # routed to the edit-reply handler. Remove once the Edit flow is verified.
+    if etype == "message" and event.get("channel_type") == "im":
+        logger.info(
+            "SLACK_DM_MESSAGE | channel=%s | user=%s | ts=%s | thread_ts=%s | subtype=%s | bot_id=%s",
+            event.get("channel"), event.get("user"), event.get("ts"), event.get("thread_ts"),
+            event.get("subtype"), event.get("bot_id"),
+        )
+
     if (
         etype == "message"
         and event.get("channel_type") == "im"
@@ -205,6 +214,14 @@ async def events(request: Request, background_tasks: BackgroundTasks):
             slack_user=event.get("user", ""),
             text=event.get("text") or "",
         )
+    elif etype == "message" and event.get("channel_type") == "im" and not event.get("bot_id"):
+        # TEMP (edit-flow diagnosis): a user DM message that is NOT treated as an edit reply.
+        reason = (
+            f"subtype={event.get('subtype')}" if event.get("subtype")
+            else "not_in_thread" if not event.get("thread_ts") or event.get("thread_ts") == event.get("ts")
+            else "unknown"
+        )
+        logger.info("EDIT_REPLY_SKIPPED | channel=%s | ts=%s | reason=%s", event.get("channel"), event.get("ts"), reason)
     elif etype == "file_shared" and (event.get("channel_id") or "").startswith("D"):
         # DMs with the bot only — files shared in channels are never ingested.
         background_tasks.add_task(

@@ -1,15 +1,18 @@
+import logging
 import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from core.config import settings
-from routers import health
+from routers import health, nodes, slack
+
+logging.basicConfig(level=logging.INFO)
 
 app = FastAPI(
     title="Neurix Enterprise API",
-    description="Infrastructure skeleton (Week 1) — no product features yet.",
-    version="0.1.0",
+    description="Slack ingest + ask, web node list and personal graph (Week 2).",
+    version="0.2.0",
 )
 
 app.add_middleware(
@@ -21,11 +24,13 @@ app.add_middleware(
 )
 
 app.include_router(health.router)
+app.include_router(nodes.router)
+app.include_router(slack.router)
 
 
 @app.get("/")
 async def root():
-    return {"message": "Neurix Enterprise API", "version": "0.1.0"}
+    return {"message": "Neurix Enterprise API", "version": "0.2.0"}
 
 
 if __name__ == "__main__":

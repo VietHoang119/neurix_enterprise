@@ -12,5 +12,17 @@ cloud-sql-python-connector[pg8000]==1.13.0
 pg8000==1.31.2
 SQLAlchemy==2.0.43
 
+# Gemini (same stack as neurix: LangChain + LangGraph + langchain-google-genai)
+langchain-core==0.3.78
+langchain-google-genai==2.1.12
+langgraph==0.6.11
+
+# Slack Web API + file downloads
+httpx==0.28.1
+
+# File ingest text extraction (PDF/images go to Gemini directly)
+python-docx==1.1.2
+openpyxl==3.1.5
+
 pytest==8.4.2
 pytest-asyncio==0.24.0

@@ -367,6 +367,55 @@ npx firebase-tools deploy --only hosting --project=PROJECT_ID
      -c "SELECT id, email, created_at FROM auth.users WHERE id = '<uid from step 2/3>';"
    ```
 
+## 14. Week 2: Slack App + Gemini
+
+Additions to the Slack App from the Week 2 handoff (§0), which are needed by
+the code as built:
+
+- **OAuth & Permissions → Bot Token Scopes**: `commands`, `chat:write`,
+  `files:read`, `im:write` (from the handoff) **plus** `im:history` (read
+  thread replies in the bot DM for Edit), `users:read` and `users:read.email`
+  (map a Slack user to their Neurix account by email). Reinstall the app to
+  the workspace after changing scopes; the `xoxb-` token stays the same.
+- **Slash Commands** `/neurix` → `https://<cloud-run-url>/slack/commands`
+- **Interactivity & Shortcuts** → `https://<cloud-run-url>/slack/interactions`
+- **Event Subscriptions** → on, Request URL
+  `https://<cloud-run-url>/slack/events` (Slack sends a signed
+  `url_verification` challenge; the backend answers it). Subscribe to bot
+  events `message.im` and `file_shared`.
+- **App Home** → enable the Messages tab and tick "Allow users to send
+  Slash commands and messages from the messages tab", otherwise users can't
+  DM files to the bot.
+
+A Slack user must have signed in to the web app once with the same email as
+their Slack profile: that is how `/neurix` finds their `user_id`.
+
+Secrets (the handoff creates the two Slack ones; the Gemini key is new),
+readable by the runtime SA:
+
+```bash
+printf '%s' "$GOOGLE_API_KEY" | gcloud secrets create gemini-api-key --data-file=- --project=PROJECT_ID
+for s in slack-bot-token slack-signing-secret gemini-api-key; do
+  gcloud secrets add-iam-policy-binding "$s" --project=PROJECT_ID \
+    --member="serviceAccount:neurix-backend-run@PROJECT_ID.iam.gserviceaccount.com" \
+    --role="roles/secretmanager.secretAccessor"
+done
+```
+
+Redeploy with **CPU always allocated** — Slack work (extraction, the
+post-confirm embedding/dedup/connections job, `/neurix ask`) runs as FastAPI
+background tasks *after* the HTTP response, and with default CPU throttling
+Cloud Run can starve them. Keep every flag from step 11 and add:
+
+```bash
+  --no-cpu-throttling \
+  --update-secrets="SLACK_BOT_TOKEN=slack-bot-token:latest,SLACK_SIGNING_SECRET=slack-signing-secret:latest,GOOGLE_API_KEY=gemini-api-key:latest"
+```
+
+Verify: `gcloud run services describe neurix-backend --region=REGION
+--format='value(spec.template.metadata.annotations."run.googleapis.com/cpu-throttling")'`
+prints `false`.
+
 ---
 
 ## Post-deploy cleanup checklist

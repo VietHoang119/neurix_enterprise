@@ -17,6 +17,9 @@ langchain-core==0.3.78
 langchain-google-genai==2.1.12
 langgraph==0.6.11
 
+# Raw file storage (view_raw)
+google-cloud-storage==3.14.1
+
 # Slack Web API + file downloads
 httpx==0.28.1
 

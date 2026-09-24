@@ -1,10 +1,7 @@
 import * as d3 from "d3";
 import type { GraphConnection, GraphNode } from "./api/nodes";
 
-export interface LayoutNode extends d3.SimulationNodeDatum {
-  id: string;
-  title: string;
-  status: GraphNode["status"];
+export interface LayoutNode extends d3.SimulationNodeDatum, GraphNode {
   degree: number;
 }
 
@@ -12,6 +9,8 @@ export interface LayoutLink {
   source: LayoutNode;
   target: LayoutNode;
   score: number;
+  isShare: boolean;
+  crossMember: boolean;
 }
 
 export interface GraphLayout {
@@ -59,7 +58,7 @@ export function computeStaticLayout(graphNodes: GraphNode[], connections: GraphC
     if (!source || !target) continue;
     source.degree += 1;
     target.degree += 1;
-    links.push({ source, target, score: c.score });
+    links.push({ source, target, score: c.score, isShare: c.is_share, crossMember: c.cross_member });
   }
 
   const degrees = nodes.map((n) => n.degree);

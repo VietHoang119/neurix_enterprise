@@ -95,6 +95,9 @@ psql "host=127.0.0.1 port=5432 sslmode=disable dbname=DB_NAME user=postgres" \
 
 psql "host=127.0.0.1 port=5432 sslmode=disable dbname=DB_NAME user=postgres" \
   -f /path/to/repo/backend/db/migrations/0003_retrieval_org_scope.sql
+
+psql "host=127.0.0.1 port=5432 sslmode=disable dbname=DB_NAME user=postgres" \
+  -f /path/to/repo/backend/db/migrations/0004_share_workflow_indexes.sql
 ```
 
 `NOTICE: ivfflat index created with little data` is expected on an empty
@@ -427,6 +430,43 @@ and skips it until the next restart/redeploy.
 Verify: `gcloud run services describe neurix-backend --region=REGION
 --format='value(spec.template.metadata.annotations."run.googleapis.com/cpu-throttling")'`
 prints `false`.
+
+## 15. Week 3: team, share, insights, raw files
+
+**Migration**: apply `0004_share_workflow_indexes.sql` (§5). It only adds
+indexes (one open invite per note+person, a note in a team space once);
+no column changes.
+
+**Slack App**: no new scopes or URLs — modals and buttons use the existing
+Interactivity URL, and `users.lookupByEmail` uses `users:read.email`. One
+setting: **Slash Commands → `/neurix` → tick "Escape channels, users, and
+links sent to your app"**, so `/neurix raw-access <note> @person on` arrives
+as `<@U…>` (without it the backend can't tell who `@person` is).
+
+**Raw file bucket** (`view_raw` / `/neurix file`):
+
+```bash
+gcloud storage buckets create gs://PROJECT_ID-neurix-raw --project=PROJECT_ID \
+  --location=REGION --uniform-bucket-level-access --public-access-prevention
+gcloud storage buckets add-iam-policy-binding gs://PROJECT_ID-neurix-raw \
+  --member="serviceAccount:neurix-backend-run@PROJECT_ID.iam.gserviceaccount.com" \
+  --role="roles/storage.objectAdmin"
+# Signed URLs on Cloud Run are signed through IAM signBlob: the runtime SA
+# must be allowed to create tokens for itself.
+gcloud iam service-accounts add-iam-policy-binding \
+  neurix-backend-run@PROJECT_ID.iam.gserviceaccount.com --project=PROJECT_ID \
+  --member="serviceAccount:neurix-backend-run@PROJECT_ID.iam.gserviceaccount.com" \
+  --role="roles/iam.serviceAccountTokenCreator"
+gcloud services enable iamcredentials.googleapis.com --project=PROJECT_ID
+```
+
+Redeploy with every earlier flag plus
+`--update-env-vars=RAW_STORAGE_BUCKET=PROJECT_ID-neurix-raw` (optional:
+`RAW_URL_TTL_SECONDS`, default 600). Without the bucket, ingest still
+works; notes just have no original file and `/neurix file` says so. Notes
+saved before this deploy have no original either.
+
+Redeploy the frontend (§12) for the Team graph panel.
 
 ---
 

@@ -78,6 +78,7 @@ async def _name(client: SlackClient, slack_user: str) -> str:
     try:
         return await client.user_name(slack_user) or "Someone"
     except Exception:
+        logger.warning("SLACK_USER_NAME_FAILED | slack_user=%s", slack_user, exc_info=True)
         return "Someone"
 
 

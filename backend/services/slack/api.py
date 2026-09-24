@@ -30,9 +30,17 @@ class SlackClient:
                 response = await client.post(_API + method, headers=self._headers(), data=payload)
             else:
                 response = await client.post(_API + method, headers=self._headers(), json=payload)
-        data = response.json()
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise SlackApiError(
+                f"{method} returned non-JSON (HTTP {response.status_code}): {response.text[:200]!r}"
+            ) from exc
         if not data.get("ok"):
-            raise SlackApiError(f"{method} failed: {data.get('error')}")
+            # Slack puts the real reason in extra fields (e.g. response_metadata.messages).
+            raise SlackApiError(
+                f"{method} failed: {data.get('error')} | response_metadata={data.get('response_metadata')}"
+            )
         return data
 
     async def open_dm(self, slack_user_id: str) -> str:

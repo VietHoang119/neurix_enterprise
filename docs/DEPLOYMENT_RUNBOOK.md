@@ -409,8 +409,20 @@ Cloud Run can starve them. Keep every flag from step 11 and add:
 
 ```bash
   --no-cpu-throttling \
+  --update-env-vars="^;^GEMINI_MODEL=gemini-3.6-flash;GEMINI_MODEL_FALLBACKS=gemini-3.6-flash,gemini-3.5-flash" \
   --update-secrets="SLACK_BOT_TOKEN=slack-bot-token:latest,SLACK_SIGNING_SECRET=slack-signing-secret:latest,GOOGLE_API_KEY=gemini-api-key:latest"
 ```
+
+**Gemini model** (`GEMINI_MODEL`, `GEMINI_MODEL_FALLBACKS`) is plain env
+config, not a secret. The `^;^` prefix switches gcloud's list delimiter to
+`;` because the fallback list itself contains commas. When a model returns
+404 NotFound (Google retired it), the backend moves to the next model in
+`GEMINI_MODEL_FALLBACKS` and logs `GEMINI_MODEL_FALLBACK` — search the logs
+for that and update `GEMINI_MODEL` when it shows up. Only NotFound falls
+back; quota/timeout errors keep langchain-google-genai's normal retry
+backoff. Note that the library retries a 404 too (~62s of backoff) before
+the fallback kicks in; after that the instance remembers the retired model
+and skips it until the next restart/redeploy.
 
 Verify: `gcloud run services describe neurix-backend --region=REGION
 --format='value(spec.template.metadata.annotations."run.googleapis.com/cpu-throttling")'`

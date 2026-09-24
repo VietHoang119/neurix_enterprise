@@ -1,10 +1,49 @@
 # Neurix Enterprise
 
 GCP foundation for Neurix Enterprise (AI Builder Cup 2026), forked from
-`neurix` (backend) and `neurix-ui` (frontend). Week 1 scope is
-**infrastructure only** — no ingest, share, or ask features yet.
+`neurix` (backend) and `neurix-ui` (frontend). Week 1 was infrastructure
+only; Week 2 adds Slack ingest + ask and a minimal web shell (personal
+scope only — no org/team/share features yet).
 
-## What this repo does this week
+## Week 2: Slack ingest, ask, web shell
+
+- `/neurix save <text>` → ephemeral "⏳ Extracting..." ack → a preview card
+  (title, summary, keys; ✅ Confirm / ✏️ Edit / ❌ Discard) posted in the
+  user's DM with the bot. The preview is staged in `node_drafts.preview`.
+- **Edit**: reply in the card's thread with new summary text and/or
+  `+key: X` / `-key: Y` lines; the card is updated in place. Any number of
+  rounds.
+- **Confirm**: inserts `node_pool` with `status='PROCESSING'` + `node_keys`,
+  then a background job embeds an edited summary, dedups new keys against
+  `key_pool` (cosine >= 0.9, per user — merge on match), writes personal
+  `connection` rows, and sets `status='READY'` (`'FAILED'` +
+  `metadata.error` on error). The card ends as
+  "✅ Saved — N new connections, key 'X' merged into 'Y'".
+- **Discard**: deletes the draft.
+- **Files** DM'd to the bot (PDF, images, .docx, .xlsx, .txt, .md, <= 20 MB):
+  PDF/images go straight to Gemini for text; docx/xlsx via python-docx /
+  openpyxl; then the same preview flow.
+- `/neurix ask <question>`: personal-scope `retrieve_candidate_nodes`, ranked
+  like neurix's chat agent, answered by Gemini from those nodes only with
+  `[n]` citations + a "Sources:" line; logged to `retrieval_log`.
+- Web shell: node list with a `⏳ Processing` badge, and a static personal
+  graph (simulated once, then frozen) showing each node's top-3 connections,
+  with a "Show all connections" toggle.
+- Every `/slack/*` request is HMAC-verified against `SLACK_SIGNING_SECRET`
+  first; anything else gets a 401.
+- No new migration: everything uses existing columns.
+
+Slack App configuration (scopes, event subscriptions) and the Cloud Run
+redeploy (`--no-cpu-throttling`, new secrets) are in
+`docs/DEPLOYMENT_RUNBOOK.md` §14.
+
+Backend tests (`cd backend && pytest`) run the Slack flows against a real
+Postgres + pgvector with the real migrations applied (set
+`TEST_DATABASE_URL`, default
+`postgresql+pg8000://postgres:postgres@localhost:5432/postgres`); Gemini and
+Slack are faked. They are skipped if no database is reachable.
+
+## Week 1: what was set up
 
 - **Backend** (`backend/`): FastAPI on Cloud Run (plain Docker + uvicorn, no
   Lambda Web Adapter, reads `$PORT`), Firebase ID token verification, Cloud

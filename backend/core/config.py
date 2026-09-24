@@ -38,6 +38,25 @@ class Settings(BaseSettings):
 
     FRONTEND_URL: str = "http://localhost:5173"
 
+    # Slack App (Week 2). Both come from Secret Manager on Cloud Run
+    # (slack-bot-token / slack-signing-secret).
+    SLACK_BOT_TOKEN: str | None = None
+    SLACK_SIGNING_SECRET: str | None = None
+    # Hard cap for file ingest (v1: PDF, txt, md, docx, xlsx, images).
+    SLACK_MAX_FILE_BYTES: int = 20 * 1024 * 1024
+
+    # Gemini — same models and thresholds as neurix's app/core/settings.py.
+    GOOGLE_API_KEY: str | None = None
+    DEFAULT_MODEL: str = "gemini-2.5-flash"
+    EMBEDDING_MODEL: str = "models/gemini-embedding-001"
+    GEMINI_EMBEDDING_DIM: int = 768
+    SIMILARITY_THRESHOLD: float = 0.1  # KeysExtractorAgent's similar-node lookup
+    TOP_K_NODE: int = 5
+    MIN_KEYS: int = 5
+    MAX_KEYS: int = 40
+    KEYS_SIMILARITY_SCORE: float = 0.9  # Stage 2 key dedup threshold
+    CHAT_RELEVANCE_THRESHOLD: float = 0.48  # absolute floor for /neurix ask sources
+
     def is_dev(self) -> bool:
         return self.MODE == "dev"
 

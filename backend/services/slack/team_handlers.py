@@ -165,7 +165,7 @@ async def open_team_invite(*, slack_user: str, trigger_id: str, response_url: st
         await _reply(response_url, "Only a team admin can add members.")
         return
     await client.open_view(trigger_id, sb.team_invite_modal(membership["name"]))
-    await client.respond(response_url, {"delete_original": True})
+    await _reply(response_url, "📝 Opened.")  # delete_original fails with `no_text` on slash commands
 
 
 async def submit_team_invite(*, slack_user: str, member_slack: str) -> None:
@@ -232,7 +232,7 @@ async def open_share(*, slack_user: str, trigger_id: str, response_url: str, tea
         return
     view = sb.share_team_modal(nodes, membership["name"]) if team else sb.share_modal(nodes)
     await client.open_view(trigger_id, view)
-    await client.respond(response_url, {"delete_original": True})
+    await _reply(response_url, "📝 Opened.")  # delete_original fails with `no_text` on slash commands
 
 
 async def submit_share(*, slack_user: str, node_id: str, recipient_slack: str, message: str | None) -> None:

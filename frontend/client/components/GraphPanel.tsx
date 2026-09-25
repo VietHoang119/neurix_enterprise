@@ -28,7 +28,7 @@ function PersonalLegend({ graph }: { graph: GraphResponse }) {
     <>
       <LegendItem>
         <Dot color={NODE_OWN} />
-        Note
+        Node
       </LegendItem>
       {graph.nodes.some((n) => n.shared) && (
         <LegendItem>
@@ -131,7 +131,7 @@ export default function GraphPanel({
           showKeys={showKeys}
           colorFor={(node) => teamColor(node.owner_id)}
           highlightCrossMember
-          emptyText="The team space is empty. Add a note from Slack with /neurix share-team."
+          emptyText="The team space is empty. Add a node from Slack with /neurix share-team."
           controls={showAllToggle}
         />
       );

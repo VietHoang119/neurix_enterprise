@@ -32,7 +32,7 @@ function StatusDot({ status }: { status?: NodeStatus }) {
 
 const DEFAULT_EMPTY = (
   <p className="py-2 text-sm text-muted-foreground">
-    No notes yet. Save one from Slack with <code>/neurix save &lt;text&gt;</code>.
+    No nodes yet. Save one from Slack with <code>/neurix save &lt;text&gt;</code>.
   </p>
 );
 

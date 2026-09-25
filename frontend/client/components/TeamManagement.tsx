@@ -116,7 +116,7 @@ export default function TeamManagement({ team, onChange }: { team: TeamView; onC
   const colorOf = memberColors(team.members);
 
   const remove = async (userId: string, name: string) => {
-    if (!window.confirm(`Remove ${name} from ${team.org?.name}? Notes they already shared stay in the team space.`))
+    if (!window.confirm(`Remove ${name} from ${team.org?.name}? Nodes they already shared stay in the team space.`))
       return;
     setRemoving(userId);
     setError(null);
@@ -148,9 +148,9 @@ export default function TeamManagement({ team, onChange }: { team: TeamView; onC
             <TableHead className="h-8 w-[66px] px-1 text-xs font-normal text-subtle-foreground">Role</TableHead>
             <TableHead
               className="h-8 w-[38px] px-1 text-right text-xs font-normal text-subtle-foreground"
-              title="Notes they shared to the team"
+              title="Nodes they shared to the team"
             >
-              Notes
+              Nodes
             </TableHead>
             {isAdmin && (
               <TableHead className="h-8 w-7 px-0">

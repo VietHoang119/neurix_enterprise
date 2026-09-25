@@ -159,7 +159,7 @@ export default function Shell({ user }: { user: User }) {
       setTeamView(teamViewData);
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Couldn't load your notes. Please try again.");
+      setError(err instanceof Error ? err.message : "Couldn't load your nodes. Please try again.");
     }
   }, []);
 
@@ -329,20 +329,20 @@ export default function Shell({ user }: { user: User }) {
           </div>
           <p className="text-sm text-muted-foreground">
             Ask your team's knowledge with <code>/neurix ask &lt;question&gt;</code> in Slack. Answers cite the exact
-            notes they came from.
+            nodes they came from.
           </p>
         </Card>
 
         <Card className="flex flex-col gap-3 p-5 lg:col-start-3 lg:row-start-2">
           <h2 className="text-base font-semibold">Insights</h2>
           <div className="flex divide-x divide-border">
-            <Stat value={nodes?.nodes.length ?? "–"} label="notes" />
+            <Stat value={nodes?.nodes.length ?? "–"} label="nodes" />
             <Stat
               value={graph?.connections.length ?? "–"}
               label="connections"
               title="Connections in your personal graph"
             />
-            <Stat value={nodes ? sharedToTeam : "–"} label="shared" title="Your notes in the team space" />
+            <Stat value={nodes ? sharedToTeam : "–"} label="shared" title="Your nodes in the team space" />
           </div>
           <p className="text-sm text-muted-foreground">
             Run <code>/neurix stats</code> in Slack for the full team breakdown.

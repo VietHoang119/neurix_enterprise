@@ -91,7 +91,7 @@ def check_shareable_node(conn, *, user_id: str, node_id: str) -> dict[str, Any]:
         {"id": node_id},
     ).first()
     if row is None or str(row.user_id) != user_id:
-        raise ShareError("You can only share your own notes.")
+        raise ShareError("You can only share your own nodes.")
     if row.status != "READY":
         raise ShareError(f"'{row.title}' is still processing — try again once it's ready.")
     return {"id": str(row.id), "title": row.title}

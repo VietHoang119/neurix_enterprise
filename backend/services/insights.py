@@ -47,13 +47,13 @@ def format_blocks(data: dict[str, Any]) -> list[dict[str, Any]]:
     p = data["personal"]
     section(
         "*👤 You*\n"
-        f"• *Volume:* {_s(p['nodes'], 'note')}, {_s(p['keys'], 'key')}, {_s(p['connections'], 'connection')}\n"
+        f"• *Volume:* {_s(p['nodes'], 'node')}, {_s(p['keys'], 'key')}, {_s(p['connections'], 'connection')}\n"
         f"• *Shared:* {p['shared_to_people']} with people"
         + (f" ({p['pending_invites']} pending)" if p["pending_invites"] else "")
         + f", {p['shared_to_team']} to your team · {p['received']} received\n"
-        f"• *Quality:* {p['orphan_pct']}% unconnected notes, {p['avg_keys']} keys per note\n"
-        f"• *Bridges:* {_s(p['bridges'], 'connection')} between your notes and other people's\n"
-        f"• *Impact:* your notes were used {_s(p['impact'], 'time')} in answers"
+        f"• *Quality:* {p['orphan_pct']}% unconnected nodes, {p['avg_keys']} keys per node\n"
+        f"• *Bridges:* {_s(p['bridges'], 'connection')} between your nodes and other people's\n"
+        f"• *Impact:* your nodes were used {_s(p['impact'], 'time')} in answers"
     )
 
     o = data["org"]
@@ -65,11 +65,11 @@ def format_blocks(data: dict[str, Any]) -> list[dict[str, Any]]:
 
     lines = [
         f"*👥 Team {escape(data['org_name'])}*",
-        f"• *Volume:* {_s(o['members'], 'member')}, {_s(o['nodes'], 'shared note')} from "
+        f"• *Volume:* {_s(o['members'], 'member')}, {_s(o['nodes'], 'shared node')} from "
         f"{_s(o['contributors'], 'contributor')}, {_s(o['keys'], 'key')}, {_s(o['connections'], 'connection')}",
-        f"• *Quality:* {o['orphan_pct']}% unconnected team notes, {o['avg_keys']} keys per note",
-        f"• *Cross-contribution:* {_s(o['bridges'], 'bridge')} between different members' notes",
-        f"• *Impact:* team notes were used {_s(o['impact'], 'time')} in team answers",
+        f"• *Quality:* {o['orphan_pct']}% unconnected team nodes, {o['avg_keys']} keys per node",
+        f"• *Cross-contribution:* {_s(o['bridges'], 'bridge')} between different members' nodes",
+        f"• *Impact:* team nodes were used {_s(o['impact'], 'time')} in team answers",
     ]
     if o["expertise"]:
         lines.append("• *Expertise:* " + "; ".join(
@@ -81,7 +81,7 @@ def format_blocks(data: dict[str, Any]) -> list[dict[str, Any]]:
         section(
             "*⚠️ Bus factor*\n"
             + "\n".join(
-                f"• *{escape(d['key'])}* ({_s(d['nodes'], 'note')}) — only {escape(d['owner'])} contributes here"
+                f"• *{escape(d['key'])}* ({_s(d['nodes'], 'node')}) — only {escape(d['owner'])} contributes here"
                 for d in o["bus_factor"]
             )
         )

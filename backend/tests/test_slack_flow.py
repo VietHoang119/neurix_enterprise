@@ -253,7 +253,7 @@ def test_confirm_insert_failure_is_reported(client, world, monkeypatch):
 
     monkeypatch.setattr(ingest, "confirm_draft", boom)
     click(client, "neurix_confirm", draft_id, "DU1", card["ts"])
-    assert world["slack"].of("update_message")[-1]["text"] == "⚠️ Couldn't save this note. Please send it again."
+    assert world["slack"].of("update_message")[-1]["text"] == "⚠️ Couldn't save this node. Please send it again."
 
 
 def test_unlinked_slack_user_is_told_to_sign_in(client, world):
@@ -354,7 +354,7 @@ def _ask(client, question):
         "/slack/commands",
         {"command": "/neurix", "text": f"ask {question}", "user_id": SLACK_USER, "channel_id": "C1", "response_url": "https://hooks/2"},
     )
-    assert res.json()["text"] == "🔎 Searching your notes..."
+    assert res.json()["text"] == "🔎 Searching your nodes..."
 
 
 def test_ask_answers_with_citations_and_logs(client, world):
@@ -377,6 +377,6 @@ def test_ask_answers_with_citations_and_logs(client, world):
 def test_ask_without_relevant_notes_still_logs(client, world):
     db, slack = world["db"], world["slack"]
     _ask(client, "quarterly revenue forecast")
-    assert "couldn't find anything in your saved notes" in slack.of("respond")[-1]["text"]
+    assert "couldn't find anything in your saved nodes" in slack.of("respond")[-1]["text"]
     with db.connect() as conn:
         assert conn.execute(text("SELECT cardinality(used_node_ids) FROM retrieval_log")).scalar_one() == 0

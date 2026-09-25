@@ -43,7 +43,7 @@ def _section(text: str) -> dict[str, Any]:
 def _node_input(
     nodes: list[dict[str, Any]],
     *,
-    placeholder: str = "Pick one of your notes",
+    placeholder: str = "Pick one of your nodes",
     selected: str | None = None,
     dispatch: bool = False,
 ) -> dict[str, Any]:
@@ -59,7 +59,7 @@ def _node_input(
     initial = next((o for o in options if o["value"] == selected), None)
     if initial:
         element["initial_option"] = initial
-    block: dict[str, Any] = {"type": "input", "block_id": NODE_BLOCK, "label": _plain("Note"), "element": element}
+    block: dict[str, Any] = {"type": "input", "block_id": NODE_BLOCK, "label": _plain("Node"), "element": element}
     if dispatch:
         block["dispatch_action"] = True
     return block
@@ -79,7 +79,7 @@ def _modal(callback_id: str, title: str, submit: str, blocks: list[dict[str, Any
 def share_modal(nodes: list[dict[str, Any]]) -> dict[str, Any]:
     return _modal(
         SHARE_MODAL,
-        "Share a note",
+        "Share a node",
         "Send invite",
         [
             _node_input(nodes),
@@ -113,7 +113,7 @@ def share_team_modal(nodes: list[dict[str, Any]], org_name: str) -> dict[str, An
         "Share to team",
         "Add to team",
         [
-            _section(f"Add a note to the *{escape(org_name)}* team space. Every member can use it right away."),
+            _section(f"Add a node to the *{escape(org_name)}* team space. Every member can use it right away."),
             _node_input(nodes),
             {
                 "type": "input",
@@ -167,11 +167,11 @@ def raw_access_modal(
     [(value, label)] for the picked note's shares — value is `team` or the
     recipient's user_id; before a note is picked the modal only asks for it."""
     blocks = [
-        _section("Let someone open (or stop opening) the original file of a note you've shared with them."),
-        _node_input(nodes, placeholder="Pick a shared note", selected=node_id, dispatch=True),
+        _section("Let someone open (or stop opening) the original file of a node you've shared with them."),
+        _node_input(nodes, placeholder="Pick a shared node", selected=node_id, dispatch=True),
     ]
     if not targets:
-        blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": "Pick a note to see who it's shared with."}]})
+        blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": "Pick a node to see who it's shared with."}]})
         return _modal(RAW_ACCESS_MODAL, "Original file access", "Save", blocks)
     access = [
         {"text": _plain("Allow — they can open the original file"), "value": "on"},
@@ -206,11 +206,11 @@ def file_modal(nodes: list[dict[str, Any]]) -> dict[str, Any]:
         "Get original file",
         "Get link",
         [
-            _node_input(nodes, placeholder="Pick a note"),
+            _node_input(nodes, placeholder="Pick a node"),
             {
                 "type": "context",
                 "elements": [
-                    {"type": "mrkdwn", "text": "Only notes whose original file you can open are listed. I'll DM you a download link."}
+                    {"type": "mrkdwn", "text": "Only nodes whose original file you can open are listed. I'll DM you a download link."}
                 ],
             },
         ],
@@ -218,7 +218,7 @@ def file_modal(nodes: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def invite_blocks(*, share_id: str, sender_slack: str, title: str, message: str | None) -> list[dict[str, Any]]:
-    blocks = [_section(f"<@{sender_slack}> wants to share a note with you: *{escape(title)}*")]
+    blocks = [_section(f"<@{sender_slack}> wants to share a node with you: *{escape(title)}*")]
     if message:
         blocks.append(_section("> " + escape(message).replace("\n", "\n> ")))
     blocks.append(

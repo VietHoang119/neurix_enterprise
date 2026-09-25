@@ -47,10 +47,12 @@ scope only — no org/team/share features yet).
 - **Raw files**: on every save the original (the text, or the uploaded
   file) goes to Cloud Storage at `raw/{uid}/{timestamp}-{name}`, its path in
   `node_pool.metadata.raw_storage_path` (deleted again on Discard).
-  `/neurix raw-access <note> @person|team on|off` flips `can_view_raw` on an
-  active share, any time. `/neurix file <note>` returns a 10-minute signed
-  URL if you own the note or an active share of it to you (or your team)
-  has `can_view_raw`.
+  `/neurix raw-access` opens a modal: pick one of your shared notes (the
+  same note picker as `/neurix share`), then one of its active shares (a
+  person or your team), then on/off — it flips `can_view_raw`, any time.
+  `/neurix file` opens a note picker listing only notes you can get the
+  original of (you own it, or an active share to you or your team has
+  `can_view_raw`) and DMs you a 10-minute signed URL.
 - `/neurix ask` uses org scope automatically for team members (own notes,
   accepted shares, and the team space); `retrieval_log.org_id` is set.
 - **Web**: a Team graph panel (`GET /team/graph`) — same static layout as

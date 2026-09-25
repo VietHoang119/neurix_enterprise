@@ -174,6 +174,9 @@ class FakeSlack:
     async def open_view(self, trigger_id, view):
         self.calls.append(("open_view", {"trigger_id": trigger_id, "view": view}))
 
+    async def update_view(self, view_id, view, view_hash=None):
+        self.calls.append(("update_view", {"view_id": view_id, "view": view, "hash": view_hash}))
+
     async def file_info(self, file_id):
         return self.files[file_id]
 

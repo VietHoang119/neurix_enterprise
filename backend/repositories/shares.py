@@ -159,6 +159,20 @@ def find_active_share(
     )
 
 
+def active_shares_by_owner(conn: Connection, owner_id: str) -> list[dict[str, Any]]:
+    """Every live share (person or team) of the owner's notes — the targets
+    the raw-access picker can toggle. Same liveness test as find_active_share."""
+    rows = conn.execute(
+        text(
+            f"SELECT {_COLUMNS} {_FROM} WHERE sn.owner_user_id = :owner AND sn.status = 'active' "
+            "AND sn.is_active = true AND (sn.expires_at IS NULL OR sn.expires_at > now()) "
+            "ORDER BY sn.org_id IS NULL, sn.created_at"
+        ),
+        {"owner": owner_id},
+    ).all()
+    return [_row(r) for r in rows]
+
+
 def set_can_view_raw(conn: Connection, share_id: str, value: bool) -> None:
     conn.execute(
         text("UPDATE share_node SET can_view_raw = :value, updated_at = now() WHERE id = :id"),

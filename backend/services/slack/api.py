@@ -89,6 +89,13 @@ class SlackClient:
     async def open_view(self, trigger_id: str, view: dict[str, Any]) -> None:
         await self.call("views.open", {"trigger_id": trigger_id, "view": view})
 
+    async def update_view(self, view_id: str, view: dict[str, Any], view_hash: str | None = None) -> None:
+        """Replace an open modal. `view_hash` makes Slack reject a stale update."""
+        payload: dict[str, Any] = {"view_id": view_id, "view": view}
+        if view_hash:
+            payload["hash"] = view_hash
+        await self.call("views.update", payload)
+
     async def file_info(self, file_id: str) -> dict[str, Any]:
         data = await self.call("files.info", {"file": file_id}, form=True)
         return data["file"]

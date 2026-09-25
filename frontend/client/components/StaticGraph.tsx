@@ -41,10 +41,13 @@ export default function StaticGraph({
 }: StaticGraphProps) {
   const [showAll, setShowAll] = useState(false);
 
-  const visibleConnections = useMemo(
-    () => (showAll ? graph.connections : selectTopConnections(graph.connections, TOP_N)),
-    [graph.connections, showAll],
-  );
+  const visibleConnections = useMemo(() => {
+    if (showAll) return graph.connections;
+    const top = new Set(selectTopConnections(graph.connections, TOP_N));
+    // In team mode the cross-member edges are the point of the graph: never
+    // declutter them away, whatever their score.
+    return graph.connections.filter((c) => top.has(c) || (highlightCrossMember && c.cross_member));
+  }, [graph.connections, showAll, highlightCrossMember]);
   const layout = useMemo(() => computeStaticLayout(graph.nodes, visibleConnections), [graph.nodes, visibleConnections]);
   const hidden = graph.connections.length - visibleConnections.length;
 
@@ -58,7 +61,7 @@ export default function StaticGraph({
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
         <small>
           {graph.nodes.length} notes · {visibleConnections.length} of {graph.connections.length} connections
-          {!showAll && hidden > 0 ? ` (top ${TOP_N} per note)` : ""}
+          {!showAll && hidden > 0 ? ` (top ${TOP_N} per note${highlightCrossMember ? " + every cross-member one" : ""})` : ""}
         </small>
         <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 14 }}>
           <input type="checkbox" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} />

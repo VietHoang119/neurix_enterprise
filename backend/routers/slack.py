@@ -32,8 +32,8 @@ HELP_TEXT = (
     "• `/neurix share` — share a note with a person (they accept or decline)\n"
     "• `/neurix share-team` — add a note to your team space\n"
     "• `/neurix stats` — what's new, plus insights for you and your team\n"
-    "• `/neurix raw-access <note> @person|team on|off` — let them open the original file\n"
-    "• `/neurix file <note>` — get a download link for a note's original file"
+    "• `/neurix raw-access` — pick a shared note and let a person or your team open its original file (or stop)\n"
+    "• `/neurix file` — pick a note and get a download link for its original file"
 )
 
 
@@ -117,12 +117,12 @@ async def commands(request: Request, background_tasks: BackgroundTasks):
         return {"response_type": "ephemeral", "text": "📊 Crunching your stats..."}
 
     if subcommand == "raw-access":
-        background_tasks.add_task(_logged(team_handlers.handle_raw_access), args=rest, **user_args)
-        return {"response_type": "ephemeral", "text": "⏳ Updating access..."}
+        background_tasks.add_task(_logged(team_handlers.open_raw_access), trigger_id=trigger_id, **user_args)
+        return {"response_type": "ephemeral", "text": "⏳ Opening..."}
 
     if subcommand == "file":
-        background_tasks.add_task(_logged(team_handlers.handle_file), args=rest, **user_args)
-        return {"response_type": "ephemeral", "text": "⏳ Looking up the file..."}
+        background_tasks.add_task(_logged(team_handlers.open_file), trigger_id=trigger_id, **user_args)
+        return {"response_type": "ephemeral", "text": "⏳ Opening..."}
 
     return {"response_type": "ephemeral", "text": HELP_TEXT}
 
@@ -134,8 +134,8 @@ async def interactions(request: Request, background_tasks: BackgroundTasks):
     slack_user = (payload.get("user") or {}).get("id", "")
 
     if payload.get("type") == "view_submission":
-        _submit_view(payload.get("view") or {}, slack_user, background_tasks)
-        return {}  # closes the modal; the outcome is DM'd to the submitter
+        # {} closes the modal; the outcome is DM'd to the submitter.
+        return _submit_view(payload.get("view") or {}, slack_user, background_tasks) or {}
 
     if payload.get("type") != "block_actions" or not payload.get("actions"):
         return {}
@@ -153,11 +153,22 @@ async def interactions(request: Request, background_tasks: BackgroundTasks):
         )
     elif action_id in (handlers.CONFIRM_ACTION, handlers.EDIT_ACTION, handlers.DISCARD_ACTION):
         background_tasks.add_task(_logged(handlers.handle_action), action_id=action_id, draft_id=action.get("value", ""), **coords)
+    elif action_id == sb.NODE_BLOCK and (payload.get("view") or {}).get("callback_id") == sb.RAW_ACCESS_MODAL:
+        view = payload["view"]
+        background_tasks.add_task(
+            _logged(team_handlers.update_raw_access_view),
+            slack_user=slack_user,
+            view_id=view.get("id", ""),
+            view_hash=view.get("hash"),
+            node_id=(action.get("selected_option") or {}).get("value", ""),
+        )
     # Anything else (e.g. picking an option inside a modal) needs no work.
     return {}
 
 
-def _submit_view(view: dict, slack_user: str, background_tasks: BackgroundTasks) -> None:
+def _submit_view(view: dict, slack_user: str, background_tasks: BackgroundTasks) -> dict | None:
+    """Queue a modal's submission; a returned dict is sent back to Slack
+    instead of closing the modal (e.g. field errors)."""
     values = (view.get("state") or {}).get("values") or {}
 
     def field(block: str) -> dict:
@@ -189,6 +200,22 @@ def _submit_view(view: dict, slack_user: str, background_tasks: BackgroundTasks)
             slack_user=slack_user,
             member_slack=field(sb.MEMBER_BLOCK).get("selected_user") or "",
         )
+    elif callback_id == sb.RAW_ACCESS_MODAL:
+        node_id = option(sb.NODE_BLOCK)
+        target_block = values.get(f"{sb.TARGET_BLOCK}.{node_id}") or {}
+        target = ((target_block.get(sb.TARGET_BLOCK) or {}).get("selected_option") or {}).get("value", "")
+        if not target:  # submitted before the note's shares were shown
+            return {"response_action": "errors", "errors": {sb.NODE_BLOCK: "Pick a note, then who it's shared with."}}
+        background_tasks.add_task(
+            _logged(team_handlers.submit_raw_access),
+            slack_user=slack_user,
+            node_id=node_id,
+            target=target,
+            on=option(sb.ACCESS_BLOCK) == "on",
+        )
+    elif callback_id == sb.FILE_MODAL:
+        background_tasks.add_task(_logged(team_handlers.submit_file), slack_user=slack_user, node_id=option(sb.NODE_BLOCK))
+    return None
 
 
 @router.post("/events")

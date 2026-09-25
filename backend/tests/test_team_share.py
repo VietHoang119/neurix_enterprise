@@ -13,7 +13,6 @@ from core.auth import get_current_uid
 from db.vector import to_pgvector
 from services import share as share_service
 from services.slack import share_blocks as sb
-from services.slack.team_handlers import match_node, parse_raw_access
 from test_slack_flow import click, post_form
 
 A, B, C = "UA", "UB", "UC"
@@ -461,53 +460,134 @@ def test_stats_digest_and_insights(client, people):
 
 # ---------------------------------------------------------------- raw files
 
-def test_raw_access_toggles_file_access(client, people, raw_store):
+def _interact(client, payload):
+    res = post_form(client, "/slack/interactions", {"payload": json.dumps(payload)})
+    assert res.status_code == 200
+    return res.json()
+
+
+def modal_block(view, block_id):
+    return next(b for b in view["blocks"] if b.get("block_id") == block_id)
+
+
+def picker_options(view, block_id=sb.NODE_BLOCK):
+    return [(o["value"], o["text"]["text"]) for o in modal_block(view, block_id)["element"]["options"]]
+
+
+def pick_raw_note(client, slack, user, node_id):
+    """Pick a note in the raw-access modal -> the updated modal."""
+    _interact(
+        client,
+        {
+            "type": "block_actions",
+            "user": {"id": user},
+            "view": {"id": "V1", "hash": "h1", "callback_id": sb.RAW_ACCESS_MODAL},
+            "actions": [{"action_id": sb.NODE_BLOCK, "selected_option": {"value": node_id}}],
+        },
+    )
+    update = slack.of("update_view")[-1]
+    assert (update["view_id"], update["hash"]) == ("V1", "h1")
+    return update["view"]
+
+
+def submit_raw_access(client, user, node_id, target, on):
+    values = {sb.NODE_BLOCK: {sb.NODE_BLOCK: {"selected_option": {"value": node_id}}}}
+    if target:
+        values[f"{sb.TARGET_BLOCK}.{node_id}"] = {sb.TARGET_BLOCK: {"selected_option": {"value": target}}}
+    values[sb.ACCESS_BLOCK] = {sb.ACCESS_BLOCK: {"selected_option": {"value": "on" if on else "off"}}}
+    view = {"callback_id": sb.RAW_ACCESS_MODAL, "state": {"values": values}}
+    return _interact(client, {"type": "view_submission", "user": {"id": user}, "view": view})
+
+
+def get_file(client, user, node_id):
+    submit(client, user, sb.FILE_MODAL, {sb.NODE_BLOCK: {"selected_option": {"value": node_id}}})
+
+
+def last_dm(slack, user):
+    return dms_to(slack, user)[-1]["text"]
+
+
+def test_raw_access_and_file_use_note_pickers(client, people, raw_store):
     db, slack = people["db"], people["slack"]
     make_team(client, people, B)
     x = add_node(db, people[A], "FastAPI tips", ["python"], raw_path="raw/a/20260101T000000-tips.pdf")
     t = add_node(db, people[A], "Team doc", ["python"], raw_path="raw/a/20260101T000000-team.pdf")
+    add_node(db, people[A], "No original", ["python"])  # saved before raw storage existed
 
-    command(client, A, "file fastapi")
-    assert "raw/a/20260101T000000-tips.pdf?ttl=600" in last_reply(slack, A)["text"]
+    # /neurix file: only notes the caller can get a link for.
+    command(client, A, "file")
+    view = slack.of("open_view")[-1]["view"]
+    assert view["callback_id"] == sb.FILE_MODAL
+    assert sorted(v for v, _ in picker_options(view)) == sorted([x, t])
+    get_file(client, A, x)
+    assert "raw/a/20260101T000000-tips.pdf?ttl=600|download>" in last_dm(slack, A)
 
-    command(client, A, "raw-access FastAPI tips <@UB|bob> on")
-    assert "has no active share with that person" in last_reply(slack, A)["text"]
-
+    # /neurix raw-access lists only notes with a live share.
+    command(client, A, "raw-access")
+    assert last_reply(slack, A)["text"].startswith("None of your notes are shared yet")
     share_to(client, A, x, B)
     card, share_id = invite_card(slack, B)
-    command(client, A, "raw-access FastAPI tips <@UB|bob> on")
-    assert "has no active share" in last_reply(slack, A)["text"]  # still pending
+    command(client, A, "raw-access")
+    assert last_reply(slack, A)["text"].startswith("None of your notes are shared yet")  # still pending
     click(client, sb.ACCEPT_ACTION, share_id, "DUB", card["ts"], user=B)
 
-    command(client, B, "file FastAPI tips")
-    assert last_reply(slack, B)["text"] == "🔒 You don't have access to the original file of *FastAPI tips*."
+    command(client, B, "file")
+    assert last_reply(slack, B)["text"] == "There are no notes with an original file you can open yet."
+    get_file(client, B, x)  # a crafted submission is still refused
+    assert last_dm(slack, B) == "🔒 You no longer have access to that note's original file."
 
-    command(client, A, "raw-access FastAPI tips <@UB|bob> on")
-    assert last_reply(slack, A)["text"] == "🔓 Original file of *FastAPI tips* is now visible to <@UB>."
-    command(client, B, "file FastAPI tips")
-    assert "tips.pdf?ttl=600|download>" in last_reply(slack, B)["text"]
+    opens = len(slack.of("open_view"))
+    command(client, A, "raw-access")
+    assert len(slack.of("open_view")) == opens + 1
+    view = slack.of("open_view")[-1]["view"]
+    assert view["callback_id"] == sb.RAW_ACCESS_MODAL
+    assert picker_options(view) == [(x, "FastAPI tips")]
+    assert modal_block(view, sb.NODE_BLOCK)["dispatch_action"] is True
+    assert not any(b.get("block_id", "").startswith(sb.TARGET_BLOCK) for b in view["blocks"])
 
-    command(client, A, "raw-access FastAPI tips <@UB> off")
-    command(client, B, "file FastAPI tips")
-    assert last_reply(slack, B)["text"].startswith("🔒")
+    view = pick_raw_note(client, slack, A, x)
+    assert modal_block(view, sb.NODE_BLOCK)["element"]["initial_option"]["value"] == x
+    assert picker_options(view, f"{sb.TARGET_BLOCK}.{x}") == [(people[B], "Bob — file hidden")]
+
+    assert submit_raw_access(client, A, x, people[B], True) == {}
+    assert last_dm(slack, A) == "🔓 Original file of *FastAPI tips* is now visible to <@UB>."
+    command(client, B, "file")
+    view = slack.of("open_view")[-1]["view"]
+    assert picker_options(view) == [(x, "FastAPI tips")]
+    get_file(client, B, x)
+    assert "tips.pdf?ttl=600|download>" in last_dm(slack, B)
+
+    view = pick_raw_note(client, slack, A, x)
+    assert picker_options(view, f"{sb.TARGET_BLOCK}.{x}") == [(people[B], "Bob — file visible")]
+    submit_raw_access(client, A, x, people[B], False)
+    assert last_dm(slack, A) == "🔒 Original file of *FastAPI tips* is now hidden from <@UB>."
+    command(client, B, "file")
+    assert last_reply(slack, B)["text"].startswith("There are no notes")
     # Revoking raw access never touches the share itself.
     assert fetch(db, "SELECT status, is_active, can_view_raw FROM share_node")[0] == ("active", True, False)
     assert [n[0] for n in notifications(db, people[B]) if n[0].startswith("raw_")] == [
         "raw_access_granted", "raw_access_revoked"
     ]
 
-    # Team scope: `team` flips the org share's flag for every member.
+    # Team scope: the team share of a note is one of its targets.
     share_team(client, A, t)
-    command(client, B, "file team doc")
-    assert last_reply(slack, B)["text"].startswith("🔒")
-    command(client, A, "raw-access team doc team on")
-    command(client, B, "file team doc")
-    assert "team.pdf" in last_reply(slack, B)["text"]
+    command(client, A, "raw-access")
+    assert sorted(v for v, _ in picker_options(slack.of("open_view")[-1]["view"])) == sorted([x, t])
+    view = pick_raw_note(client, slack, A, t)
+    assert picker_options(view, f"{sb.TARGET_BLOCK}.{t}") == [("team", "Team Platform — file hidden")]
+    submit_raw_access(client, A, t, "team", True)
+    assert last_dm(slack, A) == "🔓 Original file of *Team doc* is now visible to the team."
+    command(client, B, "file")
+    assert [v for v, _ in picker_options(slack.of("open_view")[-1]["view"])] == [t]
+    get_file(client, B, t)
+    assert "team.pdf" in last_dm(slack, B)
 
-    command(client, B, "raw-access FastAPI tips <@UA> on")  # not B's note
-    assert "only your own notes" in last_reply(slack, B)["text"]
-    command(client, A, "raw-access FastAPI tips")
-    assert last_reply(slack, A)["text"].startswith("Usage:")
+    # Guards: not the caller's note; a target picked for another note; no target yet.
+    submit_raw_access(client, B, x, people[A], True)
+    assert last_dm(slack, B) == "⚠️ You can only change access to your own notes."
+    submit_raw_access(client, A, t, people[B], True)
+    assert last_dm(slack, A) == "⚠️ *Team doc* has no active share with that person."
+    assert submit_raw_access(client, A, x, None, True)["response_action"] == "errors"
 
 
 def test_ingest_keeps_original_in_raw_storage(client, people, raw_store):
@@ -532,22 +612,3 @@ def test_ingest_keeps_original_in_raw_storage(client, people, raw_store):
     [path2] = [p for p in raw_store.objects if p != path]
     click(client, "neurix_discard", card["blocks"][-1]["elements"][0]["value"], "DUA", card["ts"], user=A)
     assert raw_store.deleted == [path2]
-
-
-# ---------------------------------------------------------------- units
-
-def test_parse_raw_access():
-    assert parse_raw_access("My note title <@U1|bob> on") == ("My note title", "U1", True)
-    assert parse_raw_access("Doc team OFF") == ("Doc", "team", False)
-    assert parse_raw_access("Doc @bob on") is None  # unescaped mention
-    assert parse_raw_access("Doc <@U1> maybe") is None
-    assert parse_raw_access("<@U1> on") is None
-
-
-def test_match_node():
-    nodes = [{"id": "1", "title": "FastAPI tips"}, {"id": "2", "title": "FastAPI"}, {"id": "3", "title": "Python"}]
-    assert match_node(nodes, "fastapi")[0]["id"] == "2"  # exact title wins
-    assert match_node(nodes, "tips")[0]["id"] == "1"
-    assert match_node(nodes, "3")[0]["id"] == "3"
-    assert "matches several" in match_node(nodes, "fast")[1]
-    assert "No note matching" in match_node(nodes, "rust")[1]

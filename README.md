@@ -47,16 +47,29 @@ scope only — no org/team/share features yet).
 - **Raw files**: on every save the original (the text, or the uploaded
   file) goes to Cloud Storage at `raw/{uid}/{timestamp}-{name}`, its path in
   `node_pool.metadata.raw_storage_path` (deleted again on Discard).
-  `/neurix raw-access <note> @person|team on|off` flips `can_view_raw` on an
-  active share, any time. `/neurix file <note>` returns a 10-minute signed
-  URL if you own the note or an active share of it to you (or your team)
-  has `can_view_raw`.
+  `/neurix raw-access` opens a modal: pick one of your shared notes (the
+  same note picker as `/neurix share`), then one of its active shares (a
+  person or your team), then on/off — it flips `can_view_raw`, any time.
+  `/neurix file` opens a note picker listing only notes you can get the
+  original of (you own it, or an active share to you or your team has
+  `can_view_raw`) and DMs you a 10-minute signed URL.
 - `/neurix ask` uses org scope automatically for team members (own notes,
   accepted shares, and the team space); `retrieval_log.org_id` is set.
 - **Web**: a Team graph panel (`GET /team/graph`) — same static layout as
   the personal graph, nodes outlined by original owner, cross-member edges
   dashed purple. The personal graph now also shows accepted shared notes
   and their persisted edges.
+- **Web (Week 3b)**: a Team panel — create a team if you have none; members
+  see a read-only member list; admins also add members by email (the same
+  email -> user lookup as Slack's `/neurix team invite`) and remove them (a
+  team always keeps an admin; removed members' team notes stay). Routes:
+  `GET/POST /team`, `POST /team/members`, `DELETE /team/members/{user_id}`.
+  Node lists (own, "Shared with me", team notes) show a 📄 File button only
+  where the original can be opened; it calls `GET /nodes/{id}/file` for the
+  same signed URL as `/neurix file`. The team graph always keeps
+  cross-member edges visible, even under the top-3 declutter. Shared rules
+  live in `services/team.py` and `services/raw_files.py`, used by both Slack
+  and web.
 - New migration `0004_share_workflow_indexes.sql` adds indexes only; no
   column on `node_pool` or `share_node`. Deployment: runbook §15.
 

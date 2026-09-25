@@ -8,12 +8,10 @@ reason it failed) is DM'd to the submitter.
 
 import asyncio
 import logging
-import re
 from typing import Any
 
 from sqlalchemy.exc import IntegrityError
 
-from core.config import settings
 from db.session import get_engine
 from repositories import nodes as nodes_repo
 from repositories import notifications as notifications_repo
@@ -21,8 +19,9 @@ from repositories import orgs as orgs_repo
 from repositories import shares as shares_repo
 from repositories import users as users_repo
 from services import insights
-from services import raw_storage
+from services import raw_files
 from services import share as share_service
+from services import team as team_service
 from services.share import NOTIFY_SCOPES, ShareError
 from services.slack import handlers as base
 from services.slack import share_blocks as sb
@@ -32,7 +31,6 @@ from services.slack.blocks import escape
 logger = logging.getLogger(__name__)
 
 NOT_IN_TEAM = "You're not in a team yet. Create one with `/neurix team create <name>`."
-_MENTION = re.compile(r"^<@([UW][A-Z0-9]+)(?:\|[^>]*)?>$")
 
 # Postgres user_id -> Slack user id (found by email). Misses are not cached.
 _slack_id_cache: dict[str, str] = {}
@@ -108,15 +106,7 @@ async def handle_team_create(*, slack_user: str, response_url: str, name: str) -
             await _reply(response_url, "Usage: `/neurix team create <name>`")
             return
         display_name = await _name(client, slack_user)
-
-        def create(conn):
-            existing = orgs_repo.get_membership(conn, user_id)
-            if existing:
-                return existing, False
-            orgs_repo.create_org(conn, name=name, created_by=user_id, display_name=display_name)
-            return orgs_repo.get_membership(conn, user_id), True
-
-        membership, created = await _db(create)
+        membership, created = await _db(team_service.create_team, user_id=user_id, name=name, display_name=display_name)
         if not created:
             await _reply(response_url, f"You're already in team *{escape(membership['name'])}* — one team per person.")
             return
@@ -135,11 +125,7 @@ async def handle_team_list(*, slack_user: str, response_url: str) -> None:
     if not user_id:
         return
 
-    def read(conn):
-        membership = orgs_repo.get_membership(conn, user_id)
-        return membership, (orgs_repo.list_members(conn, membership["org_id"]) if membership else [])
-
-    membership, members = await _db(read)
+    membership, members = await _db(team_service.list_team, user_id)
     if not membership:
         await _reply(response_url, NOT_IN_TEAM)
         return
@@ -173,13 +159,8 @@ async def submit_team_invite(*, slack_user: str, member_slack: str) -> None:
     user_id = await _linked_user(client, slack_user)
     if not user_id:
         return
-    membership = await _db(orgs_repo.get_membership, user_id)
-    if not membership or membership["role"] != "admin":
-        await _dm(client, slack_user, "Only a team admin can add members.")
-        return
-
     email = await client.user_email(member_slack)
-    member_id = await base.resolve_user_id(client, member_slack)
+    member_id = await _db(team_service.find_invitee, email) if email else None
     if not member_id:
         await _dm(
             client,
@@ -190,17 +171,13 @@ async def submit_team_invite(*, slack_user: str, member_slack: str) -> None:
         )
         return
     display_name = await _name(client, member_slack)
-
-    def add(conn):
-        existing = orgs_repo.get_membership(conn, member_id)
-        if existing:
-            return existing
-        orgs_repo.add_member(
-            conn, org_id=membership["org_id"], user_id=member_id, role="member", display_name=display_name
+    try:
+        membership, existing = await _db(
+            team_service.add_member, admin_id=user_id, member_id=member_id, display_name=display_name
         )
-        return None
-
-    existing = await _db(add)
+    except team_service.TeamError:
+        await _dm(client, slack_user, "Only a team admin can add members.")
+        return
     if existing:
         where = "your team" if existing["org_id"] == membership["org_id"] else f"team *{escape(existing['name'])}*"
         await _dm(client, slack_user, f"<@{member_slack}> is already in {where}.")
@@ -512,146 +489,159 @@ async def handle_stats(*, slack_user: str, response_url: str) -> None:
 
 
 # --------------------------------------------------------------------------
-# /neurix raw-access <node> <@person|team> on|off, /neurix file <node>
+# /neurix raw-access and /neurix file — both pick the note from a modal
+# (the same note picker as /neurix share), never from typed titles.
 # --------------------------------------------------------------------------
 
-RAW_ACCESS_USAGE = (
-    "Usage: `/neurix raw-access <note> @person on|off` (or `team` instead of `@person` for the team share)."
-)
+def _raw_access_state(conn, user_id: str) -> tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]], str | None]:
+    """The caller's READY notes that have at least one live share, their
+    shares by node id, and the caller's team name."""
+    shares: dict[str, list[dict[str, Any]]] = {}
+    for share in shares_repo.active_shares_by_owner(conn, user_id):
+        shares.setdefault(share["node_id"], []).append(share)
+    nodes = [n for n in nodes_repo.recent_ready_nodes(conn, user_id) if n["id"] in shares]
+    membership = orgs_repo.get_membership(conn, user_id)
+    return nodes, shares, membership["name"] if membership else None
 
 
-def parse_raw_access(args: str) -> tuple[str, str, bool] | None:
-    """-> (node_ref, target, on), target being a Slack user id or 'team'."""
-    tokens = args.split()
-    if len(tokens) < 3 or tokens[-1].lower() not in ("on", "off"):
-        return None
-    target = tokens[-2]
-    mention = _MENTION.match(target)
-    if mention:
-        target = mention.group(1)
-    elif target.lower() == "team":
-        target = "team"
-    else:
-        return None
-    return " ".join(tokens[:-2]), target, tokens[-1].lower() == "on"
+async def _share_targets(client: SlackClient, shares: list[dict[str, Any]], team_name: str | None) -> list[tuple[str, str]]:
+    """(value, label) per live share of one note: `team`, or the recipient's user_id."""
+    emails = await _db(users_repo.get_emails, [s["shared_user_id"] for s in shares if s["shared_user_id"]])
+    targets = []
+    for share in shares:
+        state = "file visible" if share["can_view_raw"] else "file hidden"
+        if share["org_id"]:
+            targets.append(("team", f"Team {team_name or ''}".strip() + f" — {state}"))
+            continue
+        recipient = share["shared_user_id"]
+        slack_id = await slack_user_for(client, recipient)
+        name = (await _name(client, slack_id)) if slack_id else emails.get(recipient, "Someone")
+        targets.append((recipient, f"{name} — {state}"))
+    return targets
 
 
-def match_node(nodes: list[dict[str, Any]], ref: str) -> tuple[dict[str, Any] | None, str | None]:
-    """Find a node by id, exact title, or unique title substring (case-insensitive)."""
-    ref = ref.strip()
-    if not ref:
-        return None, "Tell me which note (its title)."
-    by_id = [n for n in nodes if n["id"] == ref]
-    if by_id:
-        return by_id[0], None
-    lowered = ref.lower()
-    exact = [n for n in nodes if n["title"].lower() == lowered]
-    matches = exact or [n for n in nodes if lowered in n["title"].lower()]
-    if len(matches) == 1:
-        return matches[0], None
-    if not matches:
-        return None, f"No note matching “{escape(ref)}”."
-    names = ", ".join(f"*{escape(n['title'])}*" for n in matches[:5])
-    return None, f"“{escape(ref)}” matches several notes ({names}). Use a more exact title."
+async def open_raw_access(*, slack_user: str, trigger_id: str, response_url: str) -> None:
+    client = base.slack_client()
+    user_id = await _linked_user(client, slack_user, response_url)
+    if not user_id:
+        return
+    nodes, _, _ = await _db(_raw_access_state, user_id)
+    if not nodes:
+        await _reply(
+            response_url,
+            "None of your notes are shared yet. Share one with `/neurix share` or `/neurix share-team` first.",
+        )
+        return
+    await client.open_view(trigger_id, sb.raw_access_modal(nodes))
+    await _reply(response_url, "📝 Opened.")  # delete_original fails with `no_text` on slash commands
 
 
-async def handle_raw_access(*, slack_user: str, response_url: str, args: str) -> None:
+async def update_raw_access_view(*, slack_user: str, view_id: str, view_hash: str | None, node_id: str) -> None:
+    """A note was picked in the raw-access modal: show who it's shared with."""
+    client = base.slack_client()
+    user_id = await base.resolve_user_id(client, slack_user)
+    if not user_id:
+        return
+    nodes, shares, team_name = await _db(_raw_access_state, user_id)
+    targets = await _share_targets(client, shares.get(node_id, []), team_name)
+    await client.update_view(view_id, sb.raw_access_modal(nodes, node_id=node_id, targets=targets), view_hash)
+
+
+async def submit_raw_access(*, slack_user: str, node_id: str, target: str, on: bool) -> None:
     client = base.slack_client()
     try:
-        user_id = await _linked_user(client, slack_user, response_url)
+        user_id = await _linked_user(client, slack_user)
         if not user_id:
             return
-        parsed = parse_raw_access(args)
-        if parsed is None:
-            await _reply(response_url, RAW_ACCESS_USAGE)
+        if not node_id or not target:
+            await _dm(client, slack_user, "⚠️ Pick a note and who it's shared with, then try `/neurix raw-access` again.")
             return
-        node_ref, target, on = parsed
-        target_id = None
-        if target != "team":
-            target_id = await base.resolve_user_id(client, target)
-            if not target_id:
-                await _reply(response_url, f"<@{target}> hasn't signed in to the Neurix web app yet.")
-                return
+        is_team = target == "team"
+        target_id = None if is_team else target
 
         def toggle(conn):
-            own = [n for n in shares_repo.visible_nodes(conn, user_id=user_id, org_id=None) if n["owned"]]
-            node, error = match_node(own, node_ref)
-            if error:
-                raise ShareError(error + " (only your own notes)")
+            node = nodes_repo.get_node(conn, node_id)
+            if node is None or node["user_id"] != user_id:
+                raise ShareError("You can only change access to your own notes.")
             membership = orgs_repo.get_membership(conn, user_id)
-            if target == "team" and not membership:
+            if is_team and not membership:
                 raise ShareError(NOT_IN_TEAM)
             share = shares_repo.find_active_share(
                 conn,
-                node_id=node["id"],
+                node_id=node_id,
                 recipient_id=target_id,
-                org_id=membership["org_id"] if target == "team" else None,
+                org_id=membership["org_id"] if is_team else None,
             )
+            title = node.get("title") or "Untitled"
             if share is None:
-                who = "the team" if target == "team" else "that person"
-                raise ShareError(f"*{escape(node['title'])}* has no active share with {who}.")
+                who = "the team" if is_team else "that person"
+                raise ShareError(f"*{escape(title)}* has no active share with {who}.")
             shares_repo.set_can_view_raw(conn, share["id"], on)
-            if target == "team":
+            if is_team:
                 affected = [m for m in orgs_repo.member_ids(conn, share["org_id"]) if m != user_id]
             else:
                 affected = [target_id]
-            return node, share, affected
+            return title, share, affected
 
-        node, share, affected = await _db(toggle)
+        title, share, affected = await _db(toggle)
         name = await _name(client, slack_user)
         verb = "gave you access to" if on else "removed your access to"
         await _db(
             notifications_repo.create_many,
             user_ids=affected,
             type=notifications_repo.RAW_ACCESS_GRANTED if on else notifications_repo.RAW_ACCESS_REVOKED,
-            message=f"{name} {verb} the original file of '{node['title']}'",
+            message=f"{name} {verb} the original file of '{title}'",
             share_node_id=share["id"],
             org_id=share["org_id"],
         )
-        who = "the team" if target == "team" else f"<@{target}>"
-        await _reply(
-            response_url,
-            f"{'🔓' if on else '🔒'} Original file of *{escape(node['title'])}* is now "
+        if is_team:
+            who = "the team"
+        else:
+            target_slack = await slack_user_for(client, target_id)
+            who = f"<@{target_slack}>" if target_slack else "them"
+        await _dm(
+            client,
+            slack_user,
+            f"{'🔓' if on else '🔒'} Original file of *{escape(title)}* is now "
             f"{'visible to' if on else 'hidden from'} {who}.",
         )
     except ShareError as exc:
-        await _reply(response_url, f"⚠️ {exc}")
+        await _dm(client, slack_user, f"⚠️ {exc}")
     except Exception as exc:
         logger.error("SLACK_RAW_ACCESS_FAILED | slack_user=%s | error=%s", slack_user, exc, exc_info=True)
-        await _reply(response_url, "⚠️ Sorry, I couldn't change that. Please try again.")
+        await _dm(client, slack_user, "⚠️ Sorry, I couldn't change that. Please try again.")
 
 
-async def handle_file(*, slack_user: str, response_url: str, args: str) -> None:
+async def open_file(*, slack_user: str, trigger_id: str, response_url: str) -> None:
+    client = base.slack_client()
+    user_id = await _linked_user(client, slack_user, response_url)
+    if not user_id:
+        return
+    nodes = await _db(raw_files.fileable_nodes, user_id)
+    if not nodes:
+        await _reply(response_url, "There are no notes with an original file you can open yet.")
+        return
+    await client.open_view(trigger_id, sb.file_modal(nodes))
+    await _reply(response_url, "📝 Opened.")  # delete_original fails with `no_text` on slash commands
+
+
+async def submit_file(*, slack_user: str, node_id: str) -> None:
     client = base.slack_client()
     try:
-        user_id = await _linked_user(client, slack_user, response_url)
+        user_id = await _linked_user(client, slack_user)
         if not user_id:
             return
-
-        def visible(conn):
-            membership = orgs_repo.get_membership(conn, user_id)
-            return shares_repo.visible_nodes(conn, user_id=user_id, org_id=membership["org_id"] if membership else None)
-
-        node, error = match_node(await _db(visible), args)
-        if error:
-            await _reply(response_url, f"⚠️ {error}" if args.strip() else "Usage: `/neurix file <note title>`")
+        # Access is re-checked at submit: it may have been revoked since the modal opened.
+        node = await _db(raw_files.find_fileable, user_id=user_id, node_id=node_id)
+        if node is None:
+            await _dm(client, slack_user, "🔒 You no longer have access to that note's original file.")
             return
-        if not (node["owned"] or node["can_view_raw"]):
-            await _reply(
-                response_url, f"🔒 You don't have access to the original file of *{escape(node['title'])}*."
-            )
-            return
-        path = node["metadata"].get("raw_storage_path")
-        storage = raw_storage.get_raw_storage()
-        if not path or storage is None:
-            await _reply(response_url, f"No original file is stored for *{escape(node['title'])}*.")
-            return
-        ttl = settings.RAW_URL_TTL_SECONDS
-        url = await asyncio.to_thread(storage.signed_url, path, ttl)
-        await _reply(
-            response_url,
+        url, ttl = await asyncio.to_thread(raw_files.signed_link, node)
+        await _dm(
+            client,
+            slack_user,
             f"📄 Original of *{escape(node['title'])}*: <{url}|download> (link expires in {ttl // 60} min)",
         )
     except Exception as exc:
         logger.error("SLACK_FILE_URL_FAILED | slack_user=%s | error=%s", slack_user, exc, exc_info=True)
-        await _reply(response_url, "⚠️ Sorry, I couldn't get that file. Please try again.")
+        await _dm(client, slack_user, "⚠️ Sorry, I couldn't get that file. Please try again.")

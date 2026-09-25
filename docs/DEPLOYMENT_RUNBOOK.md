@@ -438,10 +438,9 @@ indexes (one open invite per note+person, a note in a team space once);
 no column changes.
 
 **Slack App**: no new scopes or URLs — modals and buttons use the existing
-Interactivity URL, and `users.lookupByEmail` uses `users:read.email`. One
-setting: **Slash Commands → `/neurix` → tick "Escape channels, users, and
-links sent to your app"**, so `/neurix raw-access <note> @person on` arrives
-as `<@U…>` (without it the backend can't tell who `@person` is).
+Interactivity URL, and `users.lookupByEmail` uses `users:read.email`.
+`/neurix raw-access` and `/neurix file` pick the note (and person/team)
+from modals, so no command arguments need escaping.
 
 **Raw file bucket** (`view_raw` / `/neurix file`):
 

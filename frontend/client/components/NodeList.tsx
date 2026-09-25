@@ -1,4 +1,18 @@
-import type { NodeListItem } from "../lib/api/nodes";
+import type { ReactNode } from "react";
+import type { NodeStatus } from "../lib/api/nodes";
+import FileButton from "./FileButton";
+
+/** One list row: own notes, notes shared with you, or team-space notes. */
+export interface NodeRow {
+  id: string;
+  title: string;
+  status?: NodeStatus;
+  can_open_file?: boolean;
+  /** Small text after the title, e.g. who shared it. */
+  detail?: string;
+  /** Shown before the title, e.g. the owner's color dot. */
+  lead?: ReactNode;
+}
 
 const badgeStyle = {
   marginLeft: 8,
@@ -8,7 +22,7 @@ const badgeStyle = {
   whiteSpace: "nowrap" as const,
 };
 
-function StatusBadge({ status }: { status: NodeListItem["status"] }) {
+function StatusBadge({ status }: { status?: NodeStatus }) {
   // READY gets no badge on purpose — only in-flight or broken nodes stand out.
   if (status === "PROCESSING") {
     return <span style={{ ...badgeStyle, background: "#fef3c7", color: "#92400e" }}>⏳ Processing</span>;
@@ -19,9 +33,15 @@ function StatusBadge({ status }: { status: NodeListItem["status"] }) {
   return null;
 }
 
-export default function NodeList({ nodes }: { nodes: NodeListItem[] }) {
+const DEFAULT_EMPTY = (
+  <p>
+    No notes yet. Save one from Slack with <code>/neurix save &lt;text&gt;</code>.
+  </p>
+);
+
+export default function NodeList({ nodes, empty = DEFAULT_EMPTY }: { nodes: NodeRow[]; empty?: ReactNode }) {
   if (nodes.length === 0) {
-    return <p>No notes yet. Save one from Slack with <code>/neurix save &lt;text&gt;</code>.</p>;
+    return <>{empty}</>;
   }
 
   return (
@@ -38,10 +58,17 @@ export default function NodeList({ nodes }: { nodes: NodeListItem[] }) {
             borderBottom: "1px solid #eee",
           }}
         >
-          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={node.title}>
-            {node.title}
+          <span style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+            {node.lead}
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={node.title}>
+              {node.title}
+            </span>
+            {node.detail && <small style={{ color: "#64748b", whiteSpace: "nowrap" }}>{node.detail}</small>}
           </span>
-          <StatusBadge status={node.status} />
+          <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            <StatusBadge status={node.status} />
+            {node.can_open_file && <FileButton nodeId={node.id} title={node.title} />}
+          </span>
         </li>
       ))}
     </ul>

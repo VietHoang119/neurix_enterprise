@@ -2,11 +2,12 @@ import { useCallback, useEffect, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import { signOut } from "../lib/firebase";
 import { healthApi } from "../lib/api/health";
-import { nodesApi, type GraphResponse, type NodeListItem } from "../lib/api/nodes";
-import { teamApi, type TeamGraphResponse } from "../lib/api/team";
+import { nodesApi, type GraphResponse, type NodeListResponse } from "../lib/api/nodes";
+import { teamApi, type TeamGraphResponse, type TeamView } from "../lib/api/team";
 import NodeList from "../components/NodeList";
 import StaticGraph from "../components/StaticGraph";
 import TeamGraph from "../components/TeamGraph";
+import TeamManagement from "../components/TeamManagement";
 
 // While any note is still PROCESSING, re-fetch so its badge clears (and its
 // connections appear) without a manual reload.
@@ -25,9 +26,10 @@ function Panel({ title, children, style }: { title: string; children: ReactNode;
 
 export default function Shell() {
   const [health, setHealth] = useState<string>("checking...");
-  const [nodes, setNodes] = useState<NodeListItem[] | null>(null);
+  const [nodes, setNodes] = useState<NodeListResponse | null>(null);
   const [graph, setGraph] = useState<GraphResponse | null>(null);
   const [team, setTeam] = useState<TeamGraphResponse | null>(null);
+  const [teamView, setTeamView] = useState<TeamView | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -39,10 +41,16 @@ export default function Shell() {
 
   const load = useCallback(async () => {
     try {
-      const [list, graphData, teamData] = await Promise.all([nodesApi.list(), nodesApi.graph(), teamApi.graph()]);
-      setNodes(list.nodes);
+      const [list, graphData, teamData, teamViewData] = await Promise.all([
+        nodesApi.list(),
+        nodesApi.graph(),
+        teamApi.graph(),
+        teamApi.get(),
+      ]);
+      setNodes(list);
       setGraph(graphData);
       setTeam(teamData);
+      setTeamView(teamViewData);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load notes");
@@ -53,7 +61,16 @@ export default function Shell() {
     load();
   }, [load]);
 
-  const hasProcessing = nodes?.some((n) => n.status === "PROCESSING") ?? false;
+  // A membership change also changes the team graph (and what it shows).
+  const onTeamChange = useCallback(
+    (view: TeamView) => {
+      setTeamView(view);
+      teamApi.graph().then(setTeam).catch(() => undefined);
+    },
+    [],
+  );
+
+  const hasProcessing = nodes?.nodes.some((n) => n.status === "PROCESSING") ?? false;
   useEffect(() => {
     if (!hasProcessing) return;
     const timer = window.setInterval(load, POLL_MS);
@@ -74,7 +91,24 @@ export default function Shell() {
       {error && <p style={{ color: "#b91c1c" }}>Error: {error}</p>}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16 }}>
-        <Panel title="Node list">{nodes ? <NodeList nodes={nodes} /> : <p>Loading...</p>}</Panel>
+        <Panel title="Node list">
+          {nodes ? (
+            <>
+              <NodeList nodes={nodes.nodes} />
+              {nodes.shared_with_me.length > 0 && (
+                <>
+                  <h3>Shared with me</h3>
+                  <NodeList
+                    nodes={nodes.shared_with_me.map((n) => ({ ...n, detail: n.owner_email ? `from ${n.owner_email}` : undefined }))}
+                  />
+                </>
+              )}
+            </>
+          ) : (
+            <p>Loading...</p>
+          )}
+        </Panel>
+        <Panel title="Team">{teamView ? <TeamManagement team={teamView} onChange={onTeamChange} /> : <p>Loading...</p>}</Panel>
         <Panel title="Graph" style={{ gridColumn: "1 / -1" }}>
           {graph ? <StaticGraph graph={graph} /> : <p>Loading...</p>}
         </Panel>

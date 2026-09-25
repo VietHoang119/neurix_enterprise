@@ -49,7 +49,10 @@ class HttpClient {
       } catch {
         // keep raw text
       }
-      throw new ApiError(`Request failed with status ${response.status}`, response.status, data);
+      // FastAPI puts the user-facing reason in `detail` (a string for HTTPException).
+      const detail = (data as { detail?: unknown } | null)?.detail;
+      const message = typeof detail === "string" ? detail : `Request failed with status ${response.status}`;
+      throw new ApiError(message, response.status, data);
     }
 
     if (response.status === 204) {
@@ -68,6 +71,10 @@ class HttpClient {
       method: "POST",
       body: data ? JSON.stringify(data) : undefined,
     });
+  }
+
+  delete<T>(endpoint: string, options?: RequestInit): Promise<T> {
+    return this.request<T>(endpoint, { ...options, method: "DELETE" });
   }
 }
 

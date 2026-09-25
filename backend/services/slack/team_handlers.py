@@ -92,6 +92,34 @@ async def _linked_user(client: SlackClient, slack_user: str, response_url: str |
 
 
 # --------------------------------------------------------------------------
+# Slack workspace link (orgs.slack_team_id / slack_workspace_url)
+# --------------------------------------------------------------------------
+
+async def link_workspace(*, slack_user: str, team_id: str, team_domain: str | None) -> None:
+    """Runs after every slash command: if the caller's team has no Slack
+    workspace yet, it is this one. Covers teams created before the OAuth
+    install callback existed and workspaces installed from the Slack app
+    dashboard (which never reaches our callback). Silent either way."""
+    user_id = await base.resolve_user_id(base.slack_client(), slack_user)
+    if user_id and await _db(team_service.link_slack_workspace, user_id=user_id, team_id=team_id, domain=team_domain):
+        logger.info("SLACK_WORKSPACE_LINKED | via=command | slack_user=%s | team_id=%s", slack_user, team_id)
+
+
+async def link_installer_workspace(*, bot_token: str, installer_slack: str, team_id: str) -> bool:
+    """OAuth install: link the installer's team to the workspace they just
+    installed into (overwriting any earlier link — installing is explicit).
+    False when the installer has no Neurix account or no team yet; their
+    team is then linked by its first slash command instead."""
+    user_id = await base.resolve_user_id(SlackClient(bot_token), installer_slack)
+    if not user_id:
+        return False
+    linked = await _db(team_service.link_slack_workspace, user_id=user_id, team_id=team_id, overwrite=True)
+    if linked:
+        logger.info("SLACK_WORKSPACE_LINKED | via=install | slack_user=%s | team_id=%s", installer_slack, team_id)
+    return linked
+
+
+# --------------------------------------------------------------------------
 # /neurix team create | invite | list
 # --------------------------------------------------------------------------
 

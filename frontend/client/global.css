@@ -1,0 +1,88 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  /**
+   * Dark theme, app-wide. Values are neurix-ui's (client/global.css,
+   * D3Graph.tsx, index.html) wherever it has one; the rest are the approved
+   * dashboard mockup's. HSL channels, as tailwind.config.ts expects.
+   */
+  :root {
+    color-scheme: dark;
+
+    /* neurix-ui --background (#020817) */
+    --background: 222 84% 4.9%;
+    /* neurix-ui --foreground (#f8fafc) */
+    --foreground: 210 40% 98%;
+
+    /* Panels: rgb(15, 23, 42), the dark end of neurix-ui's graph gradient.
+       neurix-ui's own --card (224 71% 4%) is ~the page background, so it
+       can't set panels apart from the page. */
+    --card: 222.2 47.4% 11.2%;
+    --card-foreground: 210 40% 98%;
+    --popover: 222.2 47.4% 11.2%;
+    --popover-foreground: 210 40% 98%;
+
+    /* neurix-ui --primary: buttons, focus rings, links */
+    --primary: 263 70% 50%;
+    --primary-foreground: 210 40% 98%;
+
+    /* neurix-ui --secondary / --muted / --border / --input */
+    --secondary: 215 27.9% 16.9%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 215 27.9% 16.9%;
+    /* neurix-ui --muted-foreground (#9ca3af): secondary text */
+    --muted-foreground: 217.9 10.6% 64.9%;
+    /* Mockup #7C8492: timestamps, labels (neurix-ui has no third text tier) */
+    --subtle-foreground: 218 9% 53%;
+
+    /* Hover fill for ghost/outline controls. neurix-ui points this at its
+       purple primary; kept neutral here so the dashboard stays quiet and
+       the graph is the one vivid surface. */
+    --accent: 215 27.9% 16.9%;
+    --accent-foreground: 210 40% 98%;
+
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 210 40% 98%;
+
+    --border: 215 27.9% 16.9%;
+    --input: 215 27.9% 16.9%;
+    --ring: 263 70% 50%;
+
+    /* neurix-ui --radius */
+    --radius: 0.75rem;
+
+    /* Graph canvas: #010816, neurix-ui's theme-color — the deepest surface
+       in the app, on purpose. */
+    --graph-canvas: 220 91% 4.5%;
+    /* neurix-ui D3Graph own-note stroke (#3b82f6) */
+    --graph-note: 217 91% 60%;
+    /* neurix-ui D3Graph key-hub diamond (#f0abfc) */
+    --graph-key: 291 93% 83%;
+
+    /* Status dots: Tailwind amber-400 / red-400 */
+    --status-processing: 43 96% 56%;
+    --status-failed: 0 91% 71%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+  }
+
+  code {
+    @apply rounded bg-muted px-1 py-0.5 font-mono text-[0.85em] text-foreground;
+  }
+}

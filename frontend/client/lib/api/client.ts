@@ -51,7 +51,8 @@ class HttpClient {
       }
       // FastAPI puts the user-facing reason in `detail` (a string for HTTPException).
       const detail = (data as { detail?: unknown } | null)?.detail;
-      const message = typeof detail === "string" ? detail : `Request failed with status ${response.status}`;
+      const message =
+        typeof detail === "string" ? detail : `Something went wrong (error ${response.status}). Please try again.`;
       throw new ApiError(message, response.status, data);
     }
 

@@ -25,7 +25,13 @@ export interface TeamMemberRow {
 }
 
 export interface TeamView {
-  org: { id: string; name: string; role: TeamRole } | null;
+  org: {
+    id: string;
+    name: string;
+    role: TeamRole;
+    /** The team's own Slack workspace; null until it is linked (see backend 0005). */
+    slack_workspace_url: string | null;
+  } | null;
   members: TeamMemberRow[];
 }
 

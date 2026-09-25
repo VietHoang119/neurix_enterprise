@@ -6,6 +6,7 @@ a typed email) and run these in one transaction; the rules live only here.
 A user belongs to at most one team, and a team always keeps an admin.
 """
 
+import re
 from typing import Any
 
 from sqlalchemy.engine import Connection
@@ -87,3 +88,37 @@ def remove_member(conn: Connection, *, admin_id: str, member_id: str) -> dict[st
         raise TeamError("You can't remove the team's only admin.")
     orgs_repo.remove_member(conn, org_id=membership["org_id"], user_id=member_id)
     return member
+
+
+# Slack ids and domains are plain slugs; anything else is not put into a
+# link the web UI renders.
+_SLACK_TEAM_ID = re.compile(r"^[A-Z0-9]{2,32}$")
+_SLACK_DOMAIN = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
+
+
+def slack_workspace_url(team_id: str, domain: str | None = None) -> str | None:
+    """Where "Open Neurix Workspace" links to: the workspace's own domain
+    when Slack told us (slash commands carry `team_domain`), else Slack's
+    id-based web client link, which always resolves for a member (the OAuth
+    install response carries only the id). None for a malformed id."""
+    if not _SLACK_TEAM_ID.match(team_id or ""):
+        return None
+    if domain and _SLACK_DOMAIN.match(domain):
+        return f"https://{domain}.slack.com/"
+    return f"https://app.slack.com/client/{team_id}"
+
+
+def link_slack_workspace(
+    conn: Connection, *, user_id: str, team_id: str, domain: str | None = None, overwrite: bool = False
+) -> bool:
+    """Record the Slack workspace of the user's team. Without `overwrite`
+    only a team with no workspace yet is linked, so a command from some
+    other workspace never re-points it; the OAuth install (an explicit act)
+    overwrites. -> whether the team was linked."""
+    url = slack_workspace_url(team_id, domain)
+    membership = orgs_repo.get_membership(conn, user_id)
+    if not membership or url is None:
+        return False
+    return orgs_repo.set_slack_workspace(
+        conn, org_id=membership["org_id"], team_id=team_id, url=url, overwrite=overwrite
+    )

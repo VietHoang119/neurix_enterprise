@@ -42,6 +42,14 @@ class Settings(BaseSettings):
     # (slack-bot-token / slack-signing-secret).
     SLACK_BOT_TOKEN: str | None = None
     SLACK_SIGNING_SECRET: str | None = None
+    # Slack OAuth install (Add to Slack / shareable install URL). Its only
+    # job here is linking the installer's team to its workspace
+    # (orgs.slack_team_id / slack_workspace_url). Unset: /slack/oauth/callback
+    # is 404 and workspaces are linked from slash commands alone.
+    SLACK_CLIENT_ID: str | None = None
+    SLACK_CLIENT_SECRET: str | None = None
+    # Only if the install URL passes redirect_uri (Slack then requires the same value here).
+    SLACK_OAUTH_REDIRECT_URI: str | None = None
     # Hard cap for file ingest (v1: PDF, txt, md, docx, xlsx, images).
     SLACK_MAX_FILE_BYTES: int = 20 * 1024 * 1024
 

@@ -6,6 +6,11 @@ CONFIRM_ACTION = "neurix_confirm"
 EDIT_ACTION = "neurix_edit"
 DISCARD_ACTION = "neurix_discard"
 
+# Shown on every preview card, so the thread is known before Edit is clicked.
+EDIT_HINT = "✏️ Edit → reply in the thread below this message."
+# Added to the card once Edit is clicked, pointing at the instructions in its thread.
+AWAITING_EDIT = "💬 *Waiting for your edit* — reply in the thread below ↓"
+
 # Slack caps section text at 3000 chars.
 _MAX_SECTION_CHARS = 2900
 
@@ -19,15 +24,20 @@ def _truncate(text: str, limit: int = _MAX_SECTION_CHARS) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
-def preview_blocks(draft_id: str, preview: dict[str, Any]) -> list[dict[str, Any]]:
+def preview_blocks(draft_id: str, preview: dict[str, Any], *, awaiting_edit: bool = False) -> list[dict[str, Any]]:
     title = preview.get("title") or "Untitled"
     summary = preview.get("summary") or ""
     keys = preview.get("keys") or []
     keys_line = ", ".join(f"`{escape(k)}`" for k in keys) if keys else "_none_"
-    return [
+    blocks: list[dict[str, Any]] = [
         {"type": "header", "text": {"type": "plain_text", "text": _truncate(title, 150), "emoji": True}},
         {"type": "section", "text": {"type": "mrkdwn", "text": _truncate(escape(summary)) or "_empty summary_"}},
         {"type": "context", "elements": [{"type": "mrkdwn", "text": _truncate(f"*Keys:* {keys_line}")}]},
+        {"type": "context", "elements": [{"type": "mrkdwn", "text": EDIT_HINT}]},
+    ]
+    if awaiting_edit:
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": AWAITING_EDIT}})
+    blocks.append(
         {
             "type": "actions",
             "elements": [
@@ -52,8 +62,9 @@ def preview_blocks(draft_id: str, preview: dict[str, Any]) -> list[dict[str, Any
                     "value": draft_id,
                 },
             ],
-        },
-    ]
+        }
+    )
+    return blocks
 
 
 def status_blocks(title: str, status_line: str) -> list[dict[str, Any]]:

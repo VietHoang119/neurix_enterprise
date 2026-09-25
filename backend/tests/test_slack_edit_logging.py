@@ -19,18 +19,20 @@ def _real_client(monkeypatch, respond):
     monkeypatch.setattr(handlers, "slack_client", lambda: SlackClient(token="xoxb-test"))
 
 
-def test_edit_posts_ephemeral_in_card_thread(client, world, monkeypatch):
+def test_edit_posts_real_message_in_card_thread(client, world, monkeypatch):
     card, draft_id = _save(client, world)
     sent = []
 
     def respond(req):
         sent.append(req)
-        return httpx.Response(200, json={"ok": True})
+        return httpx.Response(200, json={"ok": True, "ts": "2000.000100"})
 
     _real_client(monkeypatch, respond)
     click(client, "neurix_edit", draft_id, card["channel"], card["ts"])
 
-    assert [str(r.url) for r in sent] == ["https://slack.com/api/chat.postEphemeral"]
+    # chat.postMessage (never postEphemeral) posts the instructions into the
+    # card's thread; chat.update then puts the pointer on the card itself.
+    assert [str(r.url) for r in sent] == ["https://slack.com/api/chat.postMessage", "https://slack.com/api/chat.update"]
     assert b'"thread_ts":"%s"' % card["ts"].encode() in sent[0].content
 
 
@@ -52,5 +54,5 @@ def test_edit_failure_is_logged_with_traceback(client, world, monkeypatch, caplo
     failed = [r for r in caplog.records if r.getMessage().startswith("SLACK_ACTION_FAILED")]
     assert len(failed) == 1 and draft_id in failed[0].getMessage()
     assert failed[0].exc_info and error in str(failed[0].exc_info[1])
-    assert any(r.getMessage().startswith("SLACK_EDIT_EPHEMERAL_START") for r in caplog.records)
-    assert not any(r.getMessage().startswith("SLACK_EDIT_EPHEMERAL_DONE") for r in caplog.records)
+    assert any(r.getMessage().startswith("SLACK_EDIT_PROMPT_START") for r in caplog.records)
+    assert not any(r.getMessage().startswith("SLACK_EDIT_PROMPT_DONE") for r in caplog.records)

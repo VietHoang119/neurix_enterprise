@@ -125,16 +125,38 @@ def test_save_edit_confirm_end_to_end(client, world, monkeypatch):
     assert preview["keys_payload"] == {"existing_keys": ["python"], "new_keys": ["fastapi"]}
     assert preview["slack"] == {"user": SLACK_USER, "channel": "DU1", "ts": card["ts"]}
 
-    # Edit: instructions, then a free-text reply in the card's thread.
+    # The card tells the user where edits go before Edit is ever clicked.
+    assert "reply in the thread below" in card["blocks"][3]["elements"][0]["text"]
+
+    # Edit: the card points at its thread, and the instructions are a real
+    # (non-ephemeral) reply in it, then a free-text reply in the card's thread.
     click(client, "neurix_edit", draft_id, "DU1", card["ts"])
-    assert "`+key: X` / `-key: Y`" in slack.of("post_ephemeral")[-1]["text"]
+    assert not slack.of("post_ephemeral")
+    pointer = slack.of("update_message")[-1]
+    assert pointer["ts"] == card["ts"] and "Waiting for your edit" in pointer["blocks"][4]["text"]["text"]
+    assert pointer["blocks"][-1]["elements"][0]["value"] == draft_id  # buttons still there
+    instructions = slack.of("post_message")[-1]  # posted before the card update
+    assert (instructions["channel"], instructions["thread_ts"]) == ("DU1", card["ts"])
+    assert "`+key: X` / `-key: Y`" in instructions["text"]
+
+    # Slack echoes the bot's own thread message back as a message.im event;
+    # it must never be treated as an edit reply.
+    n_calls = len(slack.calls)
+    post_json(client, "/slack/events", {"type": "event_callback", "event": {
+        "type": "message", "channel_type": "im", "channel": "DU1", "user": "UBOT", "bot_id": "B1",
+        "text": instructions["text"], "ts": instructions["ts"], "thread_ts": card["ts"],
+    }})
+    assert len(slack.calls) == n_calls
+
     world["gemini"].embed_aliases["pythonic"] = "python"  # typed key ~= existing key
     thread_reply(client, "DU1", card["ts"], "FastAPI builds typed APIs in Python\n+key: pythonic")
     preview = _draft(db, draft_id)
     assert preview["preview"]["summary"] == "FastAPI builds typed APIs in Python"
     assert preview["preview"]["keys"] == ["python", "fastapi", "pythonic"]
     assert preview["summary_edited"] is True
-    assert slack.of("update_message")[-1]["blocks"][1]["text"]["text"] == "FastAPI builds typed APIs in Python"
+    updated = slack.of("update_message")[-1]["blocks"]
+    assert updated[1]["text"]["text"] == "FastAPI builds typed APIs in Python"
+    assert not any("Waiting for your edit" in str(b) for b in updated)  # edit received
     assert slack.of("post_message")[-1]["text"].startswith("✏️ Preview updated: summary updated, added key 'pythonic'")
 
     # Someone else's reply in the thread is ignored.
@@ -252,6 +274,18 @@ def test_unsigned_or_forged_requests_are_rejected(client, world, path):
     forged = {"X-Slack-Request-Timestamp": str(int(time.time())), "X-Slack-Signature": "v0=" + "0" * 64}
     assert client.post(path, content=body, headers=forged).status_code == 401
     assert world["slack"].calls == []
+
+
+def test_save_from_the_dm_never_sends_a_textless_response(client, world):
+    # A slash command's response_url rejects {"delete_original": true} with
+    # HTTP 500 `no_text`, so every response must carry text.
+    post_form(
+        client,
+        "/slack/commands",
+        {"command": "/neurix", "text": "save a note", "user_id": SLACK_USER, "channel_id": "DU1", "response_url": "https://hooks/1"},
+    )
+    reply = world["slack"].of("respond")[-1]
+    assert reply["text"] == "📬 Preview posted below." and "delete_original" not in reply
 
 
 def test_events_url_verification_and_retries(client, world):

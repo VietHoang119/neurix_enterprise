@@ -35,7 +35,8 @@ from services.slack.edit_parser import apply_edit
 logger = logging.getLogger(__name__)
 
 EDIT_INSTRUCTIONS = (
-    "Reply in this thread with new summary text, or `+key: X` / `-key: Y` to add/remove a key."
+    "✏️ *Editing this preview.* Reply here in this thread with new summary text, "
+    "or `+key: X` / `-key: Y` to add/remove a key."
 )
 NOT_LINKED = (
     "I couldn't match your Slack account to a Neurix account. Sign in to the Neurix web app once "
@@ -136,7 +137,9 @@ async def handle_save(*, slack_user: str, channel_id: str, response_url: str, te
             client, user_id=user_id, slack_user=slack_user, raw_content=text, source="slack", dm_channel=dm_channel
         )
         if channel_id == dm_channel:
-            await client.respond(response_url, {"delete_original": True})
+            # Not delete_original: a slash command's response_url can't delete
+            # its ephemeral ack and answers HTTP 500 `no_text` instead.
+            await client.respond(response_url, {"replace_original": True, "text": "📬 Preview posted below."})
         else:
             await client.respond(
                 response_url, {"replace_original": True, "text": "📬 Preview ready — check your DM with Neurix."}
@@ -230,11 +233,19 @@ async def _handle_action(*, action_id: str, draft_id: str, slack_user: str, chan
         return
 
     if action_id == EDIT_ACTION:
+        # The card itself points at its thread, and the instructions are a real
+        # thread reply (not ephemeral): only a real reply gives the card a
+        # visible "1 reply" link on every client, Slack Web included.
         # TEMP (edit-flow diagnosis): brackets the Slack call, so a hang
         # (no DONE, no FAILED) is distinguishable from an exception.
-        logger.info("SLACK_EDIT_EPHEMERAL_START | draft_id=%s | channel=%s | thread_ts=%s", draft_id, channel, message_ts)
-        await client.post_ephemeral(channel, slack_user, EDIT_INSTRUCTIONS, thread_ts=message_ts)
-        logger.info("SLACK_EDIT_EPHEMERAL_DONE | draft_id=%s", draft_id)
+        logger.info("SLACK_EDIT_PROMPT_START | draft_id=%s | channel=%s | thread_ts=%s", draft_id, channel, message_ts)
+        await client.post_message(channel, EDIT_INSTRUCTIONS, thread_ts=message_ts)
+        logger.info("SLACK_EDIT_PROMPT_DONE | draft_id=%s", draft_id)
+        preview = draft["preview"]["preview"]
+        await client.update_message(
+            channel, message_ts, f"Preview: {preview.get('title') or 'Untitled'}",
+            preview_blocks(draft_id, preview, awaiting_edit=True),
+        )
         return
     if action_id not in (CONFIRM_ACTION, DISCARD_ACTION):
         return

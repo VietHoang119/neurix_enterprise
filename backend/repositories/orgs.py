@@ -64,3 +64,19 @@ def member_ids(conn: Connection, org_id: str, *, role: str | None = None) -> lis
         {"org_id": org_id, "role": role},
     ).all()
     return [str(r.uid) for r in rows]
+
+
+def remove_member(conn: Connection, *, org_id: str, user_id: str) -> None:
+    conn.execute(text("DELETE FROM org_members WHERE org_id = :org_id AND uid = :uid"), {"org_id": org_id, "uid": user_id})
+
+
+def team_share_counts(conn: Connection, org_id: str) -> dict[str, int]:
+    """user_id -> number of their notes actively shared to the org."""
+    rows = conn.execute(
+        text(
+            "SELECT owner_user_id, count(DISTINCT node_id) AS n FROM share_node "
+            "WHERE org_id = :org_id AND status = 'active' AND is_active = true GROUP BY owner_user_id"
+        ),
+        {"org_id": org_id},
+    ).all()
+    return {str(r.owner_user_id): int(r.n) for r in rows}

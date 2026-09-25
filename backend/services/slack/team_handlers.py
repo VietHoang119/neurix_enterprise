@@ -12,7 +12,6 @@ from typing import Any
 
 from sqlalchemy.exc import IntegrityError
 
-from core.config import settings
 from db.session import get_engine
 from repositories import nodes as nodes_repo
 from repositories import notifications as notifications_repo
@@ -20,8 +19,9 @@ from repositories import orgs as orgs_repo
 from repositories import shares as shares_repo
 from repositories import users as users_repo
 from services import insights
-from services import raw_storage
+from services import raw_files
 from services import share as share_service
+from services import team as team_service
 from services.share import NOTIFY_SCOPES, ShareError
 from services.slack import handlers as base
 from services.slack import share_blocks as sb
@@ -106,15 +106,7 @@ async def handle_team_create(*, slack_user: str, response_url: str, name: str) -
             await _reply(response_url, "Usage: `/neurix team create <name>`")
             return
         display_name = await _name(client, slack_user)
-
-        def create(conn):
-            existing = orgs_repo.get_membership(conn, user_id)
-            if existing:
-                return existing, False
-            orgs_repo.create_org(conn, name=name, created_by=user_id, display_name=display_name)
-            return orgs_repo.get_membership(conn, user_id), True
-
-        membership, created = await _db(create)
+        membership, created = await _db(team_service.create_team, user_id=user_id, name=name, display_name=display_name)
         if not created:
             await _reply(response_url, f"You're already in team *{escape(membership['name'])}* — one team per person.")
             return
@@ -133,11 +125,7 @@ async def handle_team_list(*, slack_user: str, response_url: str) -> None:
     if not user_id:
         return
 
-    def read(conn):
-        membership = orgs_repo.get_membership(conn, user_id)
-        return membership, (orgs_repo.list_members(conn, membership["org_id"]) if membership else [])
-
-    membership, members = await _db(read)
+    membership, members = await _db(team_service.list_team, user_id)
     if not membership:
         await _reply(response_url, NOT_IN_TEAM)
         return
@@ -171,13 +159,8 @@ async def submit_team_invite(*, slack_user: str, member_slack: str) -> None:
     user_id = await _linked_user(client, slack_user)
     if not user_id:
         return
-    membership = await _db(orgs_repo.get_membership, user_id)
-    if not membership or membership["role"] != "admin":
-        await _dm(client, slack_user, "Only a team admin can add members.")
-        return
-
     email = await client.user_email(member_slack)
-    member_id = await base.resolve_user_id(client, member_slack)
+    member_id = await _db(team_service.find_invitee, email) if email else None
     if not member_id:
         await _dm(
             client,
@@ -188,17 +171,13 @@ async def submit_team_invite(*, slack_user: str, member_slack: str) -> None:
         )
         return
     display_name = await _name(client, member_slack)
-
-    def add(conn):
-        existing = orgs_repo.get_membership(conn, member_id)
-        if existing:
-            return existing
-        orgs_repo.add_member(
-            conn, org_id=membership["org_id"], user_id=member_id, role="member", display_name=display_name
+    try:
+        membership, existing = await _db(
+            team_service.add_member, admin_id=user_id, member_id=member_id, display_name=display_name
         )
-        return None
-
-    existing = await _db(add)
+    except team_service.TeamError:
+        await _dm(client, slack_user, "Only a team admin can add members.")
+        return
     if existing:
         where = "your team" if existing["org_id"] == membership["org_id"] else f"team *{escape(existing['name'])}*"
         await _dm(client, slack_user, f"<@{member_slack}> is already in {where}.")
@@ -633,20 +612,12 @@ async def submit_raw_access(*, slack_user: str, node_id: str, target: str, on: b
         await _dm(client, slack_user, "⚠️ Sorry, I couldn't change that. Please try again.")
 
 
-def _fileable_nodes(conn, user_id: str) -> list[dict[str, Any]]:
-    """Notes the caller can get an original-file link for: they own it or a
-    live share to them (or their team) has can_view_raw, and a file is stored."""
-    membership = orgs_repo.get_membership(conn, user_id)
-    visible = shares_repo.visible_nodes(conn, user_id=user_id, org_id=membership["org_id"] if membership else None)
-    return [n for n in visible if (n["owned"] or n["can_view_raw"]) and n["metadata"].get("raw_storage_path")]
-
-
 async def open_file(*, slack_user: str, trigger_id: str, response_url: str) -> None:
     client = base.slack_client()
     user_id = await _linked_user(client, slack_user, response_url)
     if not user_id:
         return
-    nodes = await _db(_fileable_nodes, user_id) if raw_storage.get_raw_storage() is not None else []
+    nodes = await _db(raw_files.fileable_nodes, user_id)
     if not nodes:
         await _reply(response_url, "There are no notes with an original file you can open yet.")
         return
@@ -661,13 +632,11 @@ async def submit_file(*, slack_user: str, node_id: str) -> None:
         if not user_id:
             return
         # Access is re-checked at submit: it may have been revoked since the modal opened.
-        node = next((n for n in await _db(_fileable_nodes, user_id) if n["id"] == node_id), None)
-        storage = raw_storage.get_raw_storage()
-        if node is None or storage is None:
+        node = await _db(raw_files.find_fileable, user_id=user_id, node_id=node_id)
+        if node is None:
             await _dm(client, slack_user, "🔒 You no longer have access to that note's original file.")
             return
-        ttl = settings.RAW_URL_TTL_SECONDS
-        url = await asyncio.to_thread(storage.signed_url, node["metadata"]["raw_storage_path"], ttl)
+        url, ttl = await asyncio.to_thread(raw_files.signed_link, node)
         await _dm(
             client,
             slack_user,

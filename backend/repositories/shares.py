@@ -186,7 +186,7 @@ def visible_nodes(conn: Connection, *, user_id: str, org_id: str | None) -> list
     grants carries can_view_raw. One row per node."""
     rows = conn.execute(
         text(
-            "SELECT np.id, coalesce(np.title, np.ai_title, 'Untitled') AS title, np.user_id, np.metadata, "
+            "SELECT np.id, coalesce(np.title, np.ai_title, 'Untitled') AS title, np.user_id, np.status, np.metadata, "
             "np.user_id = :uid AS owned, "
             "coalesce(bool_or(sn.can_view_raw), false) AS can_view_raw "
             "FROM node_pool np "
@@ -208,6 +208,7 @@ def visible_nodes(conn: Connection, *, user_id: str, org_id: str | None) -> list
                 "id": str(r.id),
                 "title": r.title,
                 "owner_id": str(r.user_id),
+                "status": r.status,
                 "owned": bool(r.owned),
                 "can_view_raw": bool(r.can_view_raw),
                 "metadata": metadata,

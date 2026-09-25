@@ -59,6 +59,17 @@ scope only — no org/team/share features yet).
   the personal graph, nodes outlined by original owner, cross-member edges
   dashed purple. The personal graph now also shows accepted shared notes
   and their persisted edges.
+- **Web (Week 3b)**: a Team panel — create a team if you have none; members
+  see a read-only member list; admins also add members by email (the same
+  email -> user lookup as Slack's `/neurix team invite`) and remove them (a
+  team always keeps an admin; removed members' team notes stay). Routes:
+  `GET/POST /team`, `POST /team/members`, `DELETE /team/members/{user_id}`.
+  Node lists (own, "Shared with me", team notes) show a 📄 File button only
+  where the original can be opened; it calls `GET /nodes/{id}/file` for the
+  same signed URL as `/neurix file`. The team graph always keeps
+  cross-member edges visible, even under the top-3 declutter. Shared rules
+  live in `services/team.py` and `services/raw_files.py`, used by both Slack
+  and web.
 - New migration `0004_share_workflow_indexes.sql` adds indexes only; no
   column on `node_pool` or `share_node`. Deployment: runbook §15.
 

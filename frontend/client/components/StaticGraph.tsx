@@ -81,7 +81,7 @@ export default function StaticGraph({
   showKeys,
   colorFor = (node) => (node.shared ? EDGE_SHARE : NODE_OWN),
   highlightCrossMember = false,
-  emptyText = "Your graph is empty. Saved notes appear here once processed.",
+  emptyText = "Your graph is empty. Saved nodes appear here once processed.",
   controls,
 }: StaticGraphProps) {
   const visible = useMemo(
@@ -107,7 +107,7 @@ export default function StaticGraph({
         viewBox={`${bounds.x} ${bounds.y} ${bounds.width} ${bounds.height}`}
         className="min-h-0 w-full flex-1 rounded-lg border border-white/5 bg-graph-canvas"
         role="img"
-        aria-label={`Graph of ${graph.nodes.length} notes`}
+        aria-label={`Graph of ${graph.nodes.length} nodes`}
       >
         <defs>
           <radialGradient id="gradient-normal">
@@ -150,7 +150,7 @@ export default function StaticGraph({
         <g>
           {layout.hubs.map((hub) => (
             <g key={hub.id} transform={`translate(${hub.x ?? 0},${hub.y ?? 0})`}>
-              <title>{`Key: ${hub.text} · in ${hub.noteIds.length} notes`}</title>
+              <title>{`Key: ${hub.text} · in ${hub.noteIds.length} nodes`}</title>
               <path d={DIAMOND} fill="url(#gradient-key)" stroke={KEY_STROKE} strokeWidth={1.5} />
               <text
                 y={22}
@@ -184,9 +184,9 @@ export default function StaticGraph({
       </svg>
       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 text-xs text-subtle-foreground">
         <span>
-          {graph.nodes.length} notes · {visible.length} of {graph.connections.length} connections
+          {graph.nodes.length} nodes · {visible.length} of {graph.connections.length} connections
           {!showAll && hidden > 0
-            ? ` (top ${TOP_N} per note${highlightCrossMember ? " + every cross-member one" : ""})`
+            ? ` (top ${TOP_N} per node${highlightCrossMember ? " + every cross-member one" : ""})`
             : ""}
           {showKeys && ` · ${layout.hubs.length} shared ${layout.hubs.length === 1 ? "key" : "keys"}`}
         </span>

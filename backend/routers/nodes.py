@@ -60,7 +60,7 @@ async def get_file_link(node_id: str, user_id: str = Depends(get_current_uid)):
     same access rule and link as Slack's `/neurix file`."""
     node = await asyncio.to_thread(_find_fileable, user_id, node_id)
     if node is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="You don't have access to this note's original file.")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="You don't have access to this node's original file.")
     url, ttl = await asyncio.to_thread(raw_files.signed_link, node)
     return {"url": url, "expires_in": ttl, "title": node["title"]}
 

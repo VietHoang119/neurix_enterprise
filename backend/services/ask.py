@@ -29,18 +29,18 @@ logger = logging.getLogger(__name__)
 # Adapted from neurix's ChatAgent prompt (RULE 1 "user data is the primary
 # source of truth", RULE 3 "be explicit about sources"), minus the web
 # fallback and with mandatory per-claim citations.
-ANSWER_PROMPT = """You are Neurix, an assistant that answers questions strictly from the user's saved notes (their own, and notes shared with them or their team).
+ANSWER_PROMPT = """You are Neurix, an assistant that answers questions strictly from the user's saved nodes (their own, and nodes shared with them or their team).
 
 Rules:
 - Answer ONLY from the numbered SOURCES below. Do not use outside knowledge.
 - Cite the source for every claim with its number in square brackets, e.g. [1] or [1][3].
-- If the sources do not contain the answer, say that the user's notes don't cover it — do not guess.
+- If the sources do not contain the answer, say that the user's nodes don't cover it — do not guess.
 - Be concise. Respond in the language of the question.
 
 SOURCES:
 {sources}"""
 
-NO_RESULTS_ANSWER = "I couldn't find anything in your saved notes that answers this."
+NO_RESULTS_ANSWER = "I couldn't find anything in your saved nodes that answers this."
 
 
 @dataclass

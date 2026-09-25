@@ -27,15 +27,15 @@ router = APIRouter(prefix="/slack")
 
 HELP_TEXT = (
     "*Neurix commands*\n"
-    "• `/neurix save <text>` — save a note (you'll get a preview to confirm)\n"
-    "• `/neurix ask <question>` — ask a question answered from your notes (and your team's)\n"
+    "• `/neurix save <text>` — save a node (you'll get a preview to confirm)\n"
+    "• `/neurix ask <question>` — ask a question answered from your nodes (and your team's)\n"
     "• Send a file (PDF, image, .docx, .xlsx, .txt, .md) to me in a DM to save it\n"
     "• `/neurix team create <name>` · `/neurix team invite` · `/neurix team list`\n"
-    "• `/neurix share` — share a note with a person (they accept or decline)\n"
-    "• `/neurix share-team` — add a note to your team space\n"
+    "• `/neurix share` — share a node with a person (they accept or decline)\n"
+    "• `/neurix share-team` — add a node to your team space\n"
     "• `/neurix stats` — what's new, plus insights for you and your team\n"
-    "• `/neurix raw-access` — pick a shared note and let a person or your team open its original file (or stop)\n"
-    "• `/neurix file` — pick a note and get a download link for its original file"
+    "• `/neurix raw-access` — pick a shared node and let a person or your team open its original file (or stop)\n"
+    "• `/neurix file` — pick a node and get a download link for its original file"
 )
 
 
@@ -104,7 +104,7 @@ def _command(form: dict[str, str], background_tasks: BackgroundTasks) -> dict:
 
     if subcommand == "ask" and rest:
         background_tasks.add_task(_logged(handlers.handle_ask), slack_user=slack_user, response_url=response_url, question=rest)
-        return {"response_type": "ephemeral", "text": "🔎 Searching your notes..."}
+        return {"response_type": "ephemeral", "text": "🔎 Searching your nodes..."}
 
     trigger_id = form.get("trigger_id", "")
     user_args = {"slack_user": slack_user, "response_url": response_url}
@@ -250,7 +250,7 @@ def _submit_view(view: dict, slack_user: str, background_tasks: BackgroundTasks)
         target_block = values.get(f"{sb.TARGET_BLOCK}.{node_id}") or {}
         target = ((target_block.get(sb.TARGET_BLOCK) or {}).get("selected_option") or {}).get("value", "")
         if not target:  # submitted before the note's shares were shown
-            return {"response_action": "errors", "errors": {sb.NODE_BLOCK: "Pick a note, then who it's shared with."}}
+            return {"response_action": "errors", "errors": {sb.NODE_BLOCK: "Pick a node, then who it's shared with."}}
         background_tasks.add_task(
             _logged(team_handlers.submit_raw_access),
             slack_user=slack_user,

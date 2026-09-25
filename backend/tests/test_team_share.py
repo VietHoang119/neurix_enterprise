@@ -200,7 +200,7 @@ def test_person_share_accept_end_to_end(client, people):
         "pending", False, "view", people[B], None
     )
     card, share_id = invite_card(slack, B)
-    assert card["blocks"][0]["text"]["text"] == "<@UA> wants to share a note with you: *FastAPI tips*"
+    assert card["blocks"][0]["text"]["text"] == "<@UA> wants to share a node with you: *FastAPI tips*"
     assert "thought you'd like this" in card["blocks"][1]["text"]["text"]
     assert [e["action_id"] for e in card["blocks"][-1]["elements"]] == [sb.ACCEPT_ACTION, sb.DECLINE_ACTION]
     assert share.metadata["invite_dm"] == {"channel": "DUB", "ts": card["ts"]}
@@ -239,7 +239,7 @@ def test_person_share_accept_end_to_end(client, people):
     assert graph(client, "/graph", people[A])["connections"] == []
 
     # Cross-member DM to the sender — a count, never B's private titles.
-    assert dms_to(slack, A)[-1]["text"] == "🔗 Your note *FastAPI tips* connected to 1 note in <@UB>'s network."
+    assert dms_to(slack, A)[-1]["text"] == "🔗 Your node *FastAPI tips* connected to 1 node in <@UB>'s network."
     assert notifications(db, people[A]) == [("share_accepted", "Bob accepted your share of 'FastAPI tips'")]
     assert notifications(db, people[B]) == [("share_connections", "'FastAPI tips' joined your network — 1 new connection")]
 
@@ -294,11 +294,11 @@ def test_share_to_self_unlinked_or_foreign_node_is_refused(client, people):
     theirs = add_node(db, people[B], "Bob's", ["python"])
 
     share_to(client, A, x, A)
-    assert "can't share a note with yourself" in dms_to(slack, A)[-1]["text"]
+    assert "can't share a node with yourself" in dms_to(slack, A)[-1]["text"]
     share_to(client, A, x, C)
     assert "<@UC> hasn't signed in" in dms_to(slack, A)[-1]["text"]
     share_to(client, A, theirs, B)
-    assert "only share your own notes" in dms_to(slack, A)[-1]["text"]
+    assert "only share your own nodes" in dms_to(slack, A)[-1]["text"]
     assert fetch(db, "SELECT count(*) FROM share_node")[0][0] == 0
 
 
@@ -337,7 +337,7 @@ def test_team_share_cross_member_dm_notify_scope_and_org_ask(client, people):
         "DUA": "🔗 New cross-team connection: your *FastAPI tips* links to *Python style*",
         "DUB": "🔗 New cross-team connection: <@UA>'s *FastAPI tips* links to your *Python style*",
     }
-    assert any("1 connection(s), 1 with other members' notes" in m["text"] for m in new if m["channel"] == "DUA")
+    assert any("1 connection(s), 1 with other members' nodes" in m["text"] for m in new if m["channel"] == "DUA")
     assert ("team_node_added", "Alice added 'FastAPI tips' to the team space") in notifications(db, people[B])
 
     share_team(client, A, x)
@@ -438,16 +438,16 @@ def test_stats_digest_and_insights(client, people):
     # Digest: A's two team notes (scope admin -> B isn't admin, so none), plus
     # nothing else; B's own share notified A. So B's digest is empty...
     assert "*🔔 Since last time*\nNothing new." in body
-    assert "• *Volume:* 2 notes, 2 keys, 0 connections" in body
+    assert "• *Volume:* 2 nodes, 2 keys, 0 connections" in body
     assert "• *Shared:* 0 with people, 1 to your team · 0 received" in body
-    assert "• *Quality:* 50% unconnected notes, 1.0 keys per note" in body
-    assert "• *Bridges:* 1 connection between your notes and other people's" in body
-    assert "• *Impact:* your notes were used 1 time in answers" in body
+    assert "• *Quality:* 50% unconnected nodes, 1.0 keys per node" in body
+    assert "• *Bridges:* 1 connection between your nodes and other people's" in body
+    assert "• *Impact:* your nodes were used 1 time in answers" in body
     assert "*👥 Team Platform*" in body
-    assert "2 members, 3 shared notes from 2 contributors, 2 keys, 2 connections" in body
-    assert "• *Cross-contribution:* 1 bridge between different members' notes" in body
-    assert "• *Impact:* team notes were used 2 times in team answers" in body
-    assert "*⚠️ Bus factor*\n• *kubernetes* (2 notes) — only Alice contributes here" in body
+    assert "2 members, 3 shared nodes from 2 contributors, 2 keys, 2 connections" in body
+    assert "• *Cross-contribution:* 1 bridge between different members' nodes" in body
+    assert "• *Impact:* team nodes were used 2 times in team answers" in body
+    assert "*⚠️ Bus factor*\n• *kubernetes* (2 nodes) — only Alice contributes here" in body
     assert "Alice — kubernetes" in body
 
     # A's digest has the notifications, once.
@@ -524,17 +524,17 @@ def test_raw_access_and_file_use_note_pickers(client, people, raw_store):
 
     # /neurix raw-access lists only notes with a live share.
     command(client, A, "raw-access")
-    assert last_reply(slack, A)["text"].startswith("None of your notes are shared yet")
+    assert last_reply(slack, A)["text"].startswith("None of your nodes are shared yet")
     share_to(client, A, x, B)
     card, share_id = invite_card(slack, B)
     command(client, A, "raw-access")
-    assert last_reply(slack, A)["text"].startswith("None of your notes are shared yet")  # still pending
+    assert last_reply(slack, A)["text"].startswith("None of your nodes are shared yet")  # still pending
     click(client, sb.ACCEPT_ACTION, share_id, "DUB", card["ts"], user=B)
 
     command(client, B, "file")
-    assert last_reply(slack, B)["text"] == "There are no notes with an original file you can open yet."
+    assert last_reply(slack, B)["text"] == "There are no nodes with an original file you can open yet."
     get_file(client, B, x)  # a crafted submission is still refused
-    assert last_dm(slack, B) == "🔒 You no longer have access to that note's original file."
+    assert last_dm(slack, B) == "🔒 You no longer have access to that node's original file."
 
     opens = len(slack.of("open_view"))
     command(client, A, "raw-access")
@@ -562,7 +562,7 @@ def test_raw_access_and_file_use_note_pickers(client, people, raw_store):
     submit_raw_access(client, A, x, people[B], False)
     assert last_dm(slack, A) == "🔒 Original file of *FastAPI tips* is now hidden from <@UB>."
     command(client, B, "file")
-    assert last_reply(slack, B)["text"].startswith("There are no notes")
+    assert last_reply(slack, B)["text"].startswith("There are no nodes")
     # Revoking raw access never touches the share itself.
     assert fetch(db, "SELECT status, is_active, can_view_raw FROM share_node")[0] == ("active", True, False)
     assert [n[0] for n in notifications(db, people[B]) if n[0].startswith("raw_")] == [
@@ -584,7 +584,7 @@ def test_raw_access_and_file_use_note_pickers(client, people, raw_store):
 
     # Guards: not the caller's note; a target picked for another note; no target yet.
     submit_raw_access(client, B, x, people[A], True)
-    assert last_dm(slack, B) == "⚠️ You can only change access to your own notes."
+    assert last_dm(slack, B) == "⚠️ You can only change access to your own nodes."
     submit_raw_access(client, A, t, people[B], True)
     assert last_dm(slack, A) == "⚠️ *Team doc* has no active share with that person."
     assert submit_raw_access(client, A, x, None, True)["response_action"] == "errors"

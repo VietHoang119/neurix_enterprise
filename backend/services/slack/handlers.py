@@ -269,7 +269,7 @@ async def _handle_action(*, action_id: str, draft_id: str, slack_user: str, chan
         confirmed = await asyncio.to_thread(ingest.confirm_draft, claimed)
     except Exception as exc:
         logger.error("SLACK_CONFIRM_FAILED | draft_id=%s | error=%s", draft_id, exc, exc_info=True)
-        failed = "⚠️ Couldn't save this note. Please send it again."
+        failed = "⚠️ Couldn't save this node. Please send it again."
         await client.update_message(channel, message_ts, failed, status_blocks(title, failed))
         return
     processing = "⏳ Saved — processing connections..."
@@ -279,7 +279,7 @@ async def _handle_action(*, action_id: str, draft_id: str, slack_user: str, chan
         final = ingest.done_message(result)
     except Exception:
         logger.exception("SLACK_PROCESSING_FAILED | draft_id=%s", draft_id)
-        final = "⚠️ Saved, but processing failed. The note is marked as failed."
+        final = "⚠️ Saved, but processing failed. The node is marked as failed."
     await client.update_message(channel, message_ts, final, status_blocks(title, escape(final)))
 
 

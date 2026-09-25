@@ -233,7 +233,7 @@ async def open_share(*, slack_user: str, trigger_id: str, response_url: str, tea
         await _reply(response_url, NOT_IN_TEAM)
         return
     if not nodes:
-        await _reply(response_url, "You have no ready notes to share yet. Save one with `/neurix save <text>`.")
+        await _reply(response_url, "You have no ready nodes to share yet. Save one with `/neurix save <text>`.")
         return
     view = sb.share_team_modal(nodes, membership["name"]) if team else sb.share_modal(nodes)
     await client.open_view(trigger_id, view)
@@ -247,7 +247,7 @@ async def submit_share(*, slack_user: str, node_id: str, recipient_slack: str, m
         if not sender_id:
             return
         if recipient_slack == slack_user:
-            await _dm(client, slack_user, "⚠️ You can't share a note with yourself.")
+            await _dm(client, slack_user, "⚠️ You can't share a node with yourself.")
             return
         recipient_id = await base.resolve_user_id(client, recipient_slack)
         if not recipient_id:
@@ -272,13 +272,13 @@ async def submit_share(*, slack_user: str, node_id: str, recipient_slack: str, m
         try:
             share = await _db(create)
         except IntegrityError:  # lost a race with an identical invite
-            raise ShareError("That note already has an open invite to this person.")
+            raise ShareError("That node already has an open invite to this person.")
 
         title = share["node_title"]
         channel, ts = await _dm(
             client,
             recipient_slack,
-            f"{await _name(client, slack_user)} wants to share a note with you: {title}",
+            f"{await _name(client, slack_user)} wants to share a node with you: {title}",
             sb.invite_blocks(share_id=share["id"], sender_slack=slack_user, title=title, message=message),
         )
         await _db(shares_repo.merge_metadata, share["id"], {"invite_dm": {"channel": channel, "ts": ts}})
@@ -328,7 +328,7 @@ async def submit_share_team(*, slack_user: str, node_id: str, scope: str, target
         try:
             share, membership = await _db(create)
         except IntegrityError:
-            raise ShareError("That note is already in the team space.")
+            raise ShareError("That node is already in the team space.")
 
         result = await asyncio.to_thread(share_service.persist_share_connections, share["id"])
         sharer_name = await _name(client, slack_user)
@@ -352,14 +352,14 @@ async def submit_share_team(*, slack_user: str, node_id: str, scope: str, target
             client,
             slack_user,
             f"✅ Added *{escape(title)}* to team *{escape(membership['name'])}* — "
-            f"{len(result.connected)} connection(s), {len(cross)} with other members' notes.",
+            f"{len(result.connected)} connection(s), {len(cross)} with other members' nodes.",
         )
         await _dm_cross_member(client, result, sharer_slack=slack_user)
     except ShareError as exc:
         await _dm(client, slack_user, f"⚠️ {exc}")
     except Exception as exc:
         logger.error("SLACK_SHARE_TEAM_FAILED | slack_user=%s | error=%s", slack_user, exc, exc_info=True)
-        await _dm(client, slack_user, "⚠️ Sorry, I couldn't add that note to the team. Please try again.")
+        await _dm(client, slack_user, "⚠️ Sorry, I couldn't add that node to the team. Please try again.")
 
 
 async def _dm_cross_member(client: SlackClient, result: share_service.PersistResult, *, sharer_slack: str) -> None:
@@ -446,7 +446,7 @@ async def handle_share_action(*, action_id: str, share_id: str, slack_user: str,
         result = await asyncio.to_thread(share_service.persist_share_connections, share_id)
     except Exception as exc:
         logger.error("SHARE_PERSIST_FAILED | share_id=%s | error=%s", share_id, exc, exc_info=True)
-        failed = f"✅ Accepted *{escape(title)}*, but connecting it to your notes failed."
+        failed = f"✅ Accepted *{escape(title)}*, but connecting it to your nodes failed."
         await client.update_message(channel, message_ts, "Accepted.", sb.text_blocks(failed))
         return
 
@@ -472,7 +472,7 @@ async def handle_share_action(*, action_id: str, share_id: str, slack_user: str,
             await _dm(
                 client,
                 sender_slack,
-                f"🔗 Your note *{escape(title)}* connected to {n} note{'' if n == 1 else 's'} "
+                f"🔗 Your node *{escape(title)}* connected to {n} node{'' if n == 1 else 's'} "
                 f"in <@{slack_user}>'s network.",
             )
 
@@ -557,7 +557,7 @@ async def open_raw_access(*, slack_user: str, trigger_id: str, response_url: str
     if not nodes:
         await _reply(
             response_url,
-            "None of your notes are shared yet. Share one with `/neurix share` or `/neurix share-team` first.",
+            "None of your nodes are shared yet. Share one with `/neurix share` or `/neurix share-team` first.",
         )
         return
     await client.open_view(trigger_id, sb.raw_access_modal(nodes))
@@ -582,7 +582,7 @@ async def submit_raw_access(*, slack_user: str, node_id: str, target: str, on: b
         if not user_id:
             return
         if not node_id or not target:
-            await _dm(client, slack_user, "⚠️ Pick a note and who it's shared with, then try `/neurix raw-access` again.")
+            await _dm(client, slack_user, "⚠️ Pick a node and who it's shared with, then try `/neurix raw-access` again.")
             return
         is_team = target == "team"
         target_id = None if is_team else target
@@ -590,7 +590,7 @@ async def submit_raw_access(*, slack_user: str, node_id: str, target: str, on: b
         def toggle(conn):
             node = nodes_repo.get_node(conn, node_id)
             if node is None or node["user_id"] != user_id:
-                raise ShareError("You can only change access to your own notes.")
+                raise ShareError("You can only change access to your own nodes.")
             membership = orgs_repo.get_membership(conn, user_id)
             if is_team and not membership:
                 raise ShareError(NOT_IN_TEAM)
@@ -647,7 +647,7 @@ async def open_file(*, slack_user: str, trigger_id: str, response_url: str) -> N
         return
     nodes = await _db(raw_files.fileable_nodes, user_id)
     if not nodes:
-        await _reply(response_url, "There are no notes with an original file you can open yet.")
+        await _reply(response_url, "There are no nodes with an original file you can open yet.")
         return
     await client.open_view(trigger_id, sb.file_modal(nodes))
     await _reply(response_url, "📝 Opened.")  # delete_original fails with `no_text` on slash commands
@@ -662,7 +662,7 @@ async def submit_file(*, slack_user: str, node_id: str) -> None:
         # Access is re-checked at submit: it may have been revoked since the modal opened.
         node = await _db(raw_files.find_fileable, user_id=user_id, node_id=node_id)
         if node is None:
-            await _dm(client, slack_user, "🔒 You no longer have access to that note's original file.")
+            await _dm(client, slack_user, "🔒 You no longer have access to that node's original file.")
             return
         url, ttl = await asyncio.to_thread(raw_files.signed_link, node)
         await _dm(

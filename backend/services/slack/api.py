@@ -17,6 +17,21 @@ class SlackApiError(RuntimeError):
     pass
 
 
+async def oauth_access(*, client_id: str, client_secret: str, code: str, redirect_uri: str | None) -> dict[str, Any]:
+    """Exchange an install's OAuth code (oauth.v2.access). Authenticated by
+    the app's client credentials, not a bot token. The response carries the
+    workspace (`team.id`), the installer (`authed_user.id`) and a bot token."""
+    payload = {"client_id": client_id, "client_secret": client_secret, "code": code}
+    if redirect_uri:
+        payload["redirect_uri"] = redirect_uri
+    async with httpx.AsyncClient(timeout=15) as client:
+        response = await client.post(_API + "oauth.v2.access", data=payload)
+    data = response.json()
+    if not data.get("ok"):
+        raise SlackApiError(f"oauth.v2.access failed: {data.get('error')}")
+    return data
+
+
 class SlackClient:
     def __init__(self, token: str | None = None):
         self.token = token or settings.SLACK_BOT_TOKEN

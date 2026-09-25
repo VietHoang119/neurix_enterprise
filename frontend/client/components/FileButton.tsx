@@ -1,5 +1,9 @@
 import { useState } from "react";
+import { FileText, Loader2 } from "lucide-react";
 import { nodesApi } from "../lib/api/nodes";
+import { cn } from "../lib/utils";
+import { Button } from "./ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
 /**
  * Opens a note's original file in a new tab, through a short-lived signed
@@ -33,18 +37,26 @@ export default function FileButton({ nodeId, title }: { nodeId: string; title: s
   };
 
   return (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-      <button
-        type="button"
-        onClick={open}
-        disabled={busy}
-        title={`Open the original file of ${title}`}
-        aria-label={`Open the original file of ${title}`}
-        style={{ padding: "2px 8px", fontSize: 13, whiteSpace: "nowrap" }}
-      >
-        {busy ? "…" : "📄 File"}
-      </button>
-      {error && <small style={{ color: "#b91c1c" }}>{error}</small>}
-    </span>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          onClick={open}
+          disabled={busy}
+          aria-label={`Open the original file of ${title}`}
+          className={cn(
+            "h-7 w-7 flex-none text-subtle-foreground hover:text-foreground",
+            error && "text-status-failed",
+          )}
+        >
+          {busy ? <Loader2 className="animate-spin" /> : <FileText />}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent className={cn("max-w-64 text-xs", error && "text-status-failed")}>
+        {error ?? "Open original file"}
+      </TooltipContent>
+    </Tooltip>
   );
 }

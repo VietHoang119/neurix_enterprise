@@ -469,6 +469,32 @@ Redeploy the frontend (§12) for the Team graph panel.
 
 ---
 
+## 16. Web UI polish: dashboard, graph tabs + keys, Slack workspace link
+
+**Migration**: apply `0005_org_slack_workspace.sql` (§5). Additive:
+`orgs.slack_team_id` and `orgs.slack_workspace_url`, both nullable.
+
+**Linking a team to its Slack workspace** (the web "Open Neurix Workspace"
+button; disabled with an explanation until a team is linked):
+
+- Automatic, no setup: the first `/neurix` command a team member runs
+  links their team to that workspace (the command payload carries
+  `team_id` / `team_domain`). This covers existing teams and a workspace
+  installed from the Slack app dashboard.
+- Optional, at install time: set Slack app → *OAuth & Permissions* →
+  *Redirect URLs* to `https://BACKEND_URL/slack/oauth/callback`, and add
+  env vars `SLACK_CLIENT_ID` and `SLACK_CLIENT_SECRET` (Secret Manager,
+  from *Basic Information*). An install through "Add to Slack" / the
+  shareable install URL then links the installer's team and redirects to
+  `FRONTEND_URL`. If the install URL passes `redirect_uri`, also set
+  `SLACK_OAUTH_REDIRECT_URI` to the same value. Unset: the callback is 404.
+  The callback does not store the new bot token — the backend still uses
+  the single `SLACK_BOT_TOKEN`, so this is not multi-workspace support.
+
+No new Slack scopes. Redeploy backend and frontend (§12).
+
+---
+
 ## Post-deploy cleanup checklist
 
 - [ ] Remove the self-granted `roles/orgpolicy.policyAdmin` binding if it

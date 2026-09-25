@@ -1,5 +1,7 @@
 import type { ReactNode } from "react";
 import type { NodeStatus } from "../lib/api/nodes";
+import { statusLabel } from "../lib/format";
+import { cn } from "../lib/utils";
 import FileButton from "./FileButton";
 
 /** One list row: own notes, notes shared with you, or team-space notes. */
@@ -8,69 +10,71 @@ export interface NodeRow {
   title: string;
   status?: NodeStatus;
   can_open_file?: boolean;
-  /** Small text after the title, e.g. who shared it. */
+  /** Second line, e.g. "Shared to team · 2h ago" or who shared it. A non-ready status replaces it. */
   detail?: string;
   /** Shown before the title, e.g. the owner's color dot. */
   lead?: ReactNode;
 }
 
-const badgeStyle = {
-  marginLeft: 8,
-  padding: "2px 8px",
-  borderRadius: 999,
-  fontSize: 12,
-  whiteSpace: "nowrap" as const,
-};
-
-function StatusBadge({ status }: { status?: NodeStatus }) {
-  // READY gets no badge on purpose — only in-flight or broken nodes stand out.
-  if (status === "PROCESSING") {
-    return <span style={{ ...badgeStyle, background: "#fef3c7", color: "#92400e" }}>⏳ Processing</span>;
-  }
-  if (status === "FAILED") {
-    return <span style={{ ...badgeStyle, background: "#fee2e2", color: "#991b1b" }}>⚠️ Failed</span>;
-  }
-  return null;
+function StatusDot({ status }: { status?: NodeStatus }) {
+  // READY gets no dot on purpose — only in-flight or broken notes stand out.
+  if (status !== "PROCESSING" && status !== "FAILED") return null;
+  return (
+    <span
+      className={cn(
+        "h-1.5 w-1.5 flex-none rounded-full",
+        status === "PROCESSING" ? "bg-status-processing" : "bg-status-failed",
+      )}
+      aria-hidden
+    />
+  );
 }
 
 const DEFAULT_EMPTY = (
-  <p>
+  <p className="py-2 text-sm text-muted-foreground">
     No notes yet. Save one from Slack with <code>/neurix save &lt;text&gt;</code>.
   </p>
 );
 
+/** A plain row list with dividers — no card per item. */
 export default function NodeList({ nodes, empty = DEFAULT_EMPTY }: { nodes: NodeRow[]; empty?: ReactNode }) {
   if (nodes.length === 0) {
     return <>{empty}</>;
   }
 
   return (
-    <ul style={{ listStyle: "none", margin: 0, padding: 0, maxHeight: 480, overflowY: "auto" }}>
-      {nodes.map((node) => (
-        <li
-          key={node.id}
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            gap: 8,
-            padding: "8px 0",
-            borderBottom: "1px solid #eee",
-          }}
-        >
-          <span style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+    <ul className="divide-y divide-border">
+      {nodes.map((node) => {
+        const status = statusLabel(node.status);
+        const second = status ?? node.detail;
+        return (
+          <li
+            key={node.id}
+            className="-mx-2 flex items-center gap-3 rounded-md px-2 py-2.5 transition-colors hover:bg-white/[0.03]"
+          >
             {node.lead}
-            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={node.title}>
-              {node.title}
-            </span>
-            {node.detail && <small style={{ color: "#64748b", whiteSpace: "nowrap" }}>{node.detail}</small>}
-          </span>
-          <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
-            <StatusBadge status={node.status} />
+            <div className="min-w-0 flex-1">
+              {/* Long titles end in an ellipsis; the full title is the hover tooltip. */}
+              <p className="truncate text-sm text-foreground" title={node.title}>
+                {node.title}
+              </p>
+              {second && (
+                <p
+                  className={cn(
+                    "truncate text-xs",
+                    node.status === "FAILED" ? "text-status-failed" : "text-subtle-foreground",
+                  )}
+                  title={second}
+                >
+                  {second}
+                </p>
+              )}
+            </div>
+            <StatusDot status={node.status} />
             {node.can_open_file && <FileButton nodeId={node.id} title={node.title} />}
-          </span>
-        </li>
-      ))}
+          </li>
+        );
+      })}
     </ul>
   );
 }

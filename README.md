@@ -5,6 +5,26 @@ GCP foundation for Neurix Enterprise (AI Builder Cup 2026), forked from
 only; Week 2 adds Slack ingest + ask and a minimal web shell (personal
 scope only — no org/team/share features yet).
 
+## Web UI polish (dark dashboard)
+
+- **Dashboard**: dark theme app-wide, using neurix-ui's tokens (Tailwind +
+  the shadcn/ui primitives copied from neurix-ui into
+  `frontend/client/components/ui/`, which are not edited by hand). Grid:
+  Knowledge Management (left, full height) · Graph · Team, over Ask ·
+  Insights. The graph canvas is the deepest surface in the app.
+- **Graph**: Personal / Team tabs, plus a "Show keys" toggle that draws
+  the keys two or more notes share (up to 20) as diamonds with dotted links
+  to their notes. `GET /graph` and `GET /team/graph` nodes now carry
+  `keys` (from `node_keys` → `key_pool`). The top-3 declutter and "Show
+  all connections" are unchanged.
+- **Slack workspace link**: `orgs.slack_team_id` / `slack_workspace_url`
+  (migration `0005`), filled by the first `/neurix` command from a team
+  member or by the Slack OAuth install callback (`GET
+  /slack/oauth/callback`). `GET /team` returns `org.slack_workspace_url`.
+  The Ask panel's "Open Neurix Workspace" uses it. Nothing is hardcoded.
+- **Header**: logo, the person's name and avatar (no raw ids), and a menu
+  with Refresh and Sign out. Runbook §16.
+
 ## Week 3: team, share, insights, team graph
 
 - **Team**: `/neurix team create <name>` (caller becomes admin),

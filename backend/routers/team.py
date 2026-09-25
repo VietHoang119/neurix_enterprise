@@ -44,7 +44,13 @@ def _team_view(conn, user_id: str):
     if membership is None:
         return {"org": None, "members": []}
     return {
-        "org": {"id": membership["org_id"], "name": membership["name"], "role": membership["role"]},
+        "org": {
+            "id": membership["org_id"],
+            "name": membership["name"],
+            "role": membership["role"],
+            # The team's own Slack workspace, or None until it is linked.
+            "slack_workspace_url": membership["slack_workspace_url"],
+        },
         "members": [
             {
                 "user_id": m["user_id"],

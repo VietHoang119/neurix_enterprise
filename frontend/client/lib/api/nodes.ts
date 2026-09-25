@@ -43,6 +43,8 @@ export interface GraphNode {
   shared: boolean;
   /** Team graph only: the original file can be opened. */
   can_open_file?: boolean;
+  /** The note's extracted keys (key_text), for "Show keys". */
+  keys: string[];
 }
 
 /** One edge per node pair: strongest score across the keys they share. */

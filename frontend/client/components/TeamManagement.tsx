@@ -1,10 +1,18 @@
 import { useState } from "react";
 import type { FormEvent } from "react";
+import { X } from "lucide-react";
 import { teamApi, type TeamView } from "../lib/api/team";
+import { initials } from "../lib/format";
+import { memberColors } from "../lib/memberColors";
+import { cn } from "../lib/utils";
+import { Avatar, AvatarFallback } from "./ui/avatar";
+import { Badge } from "./ui/badge";
+import { Button } from "./ui/button";
+import { Input } from "./ui/input";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/table";
+import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
 const errorText = (err: unknown) => (err instanceof Error ? err.message : "Something went wrong. Please try again.");
-
-const cell = { padding: "6px 8px", borderBottom: "1px solid #eee", textAlign: "left" as const };
 
 function CreateTeam({ onChange }: { onChange: (view: TeamView) => void }) {
   const [name, setName] = useState("");
@@ -26,16 +34,18 @@ function CreateTeam({ onChange }: { onChange: (view: TeamView) => void }) {
   };
 
   return (
-    <form onSubmit={submit} style={{ display: "flex", flexDirection: "column", gap: 8, maxWidth: 360 }}>
-      <p style={{ margin: 0 }}>You're not in a team yet. Create one — you'll be its admin.</p>
-      <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+    <form onSubmit={submit} className="flex flex-col gap-3">
+      <p className="text-sm text-muted-foreground">You're not in a team yet. Create one — you'll be its admin.</p>
+      <label htmlFor="team-name" className="text-xs text-muted-foreground">
         Team name
-        <input value={name} onChange={(e) => setName(e.target.value)} maxLength={100} required />
       </label>
-      <button type="submit" disabled={busy || !name.trim()} style={{ alignSelf: "flex-start" }}>
-        {busy ? "Creating..." : "Create team"}
-      </button>
-      {error && <p style={{ color: "#b91c1c", margin: 0 }}>{error}</p>}
+      <div className="flex gap-2">
+        <Input id="team-name" value={name} onChange={(e) => setName(e.target.value)} maxLength={100} required />
+        <Button type="submit" disabled={busy || !name.trim()}>
+          {busy ? "Creating…" : "Create"}
+        </Button>
+      </div>
+      {error && <p className="text-sm text-status-failed">{error}</p>}
     </form>
   );
 }
@@ -61,31 +71,33 @@ function InviteMember({ onChange }: { onChange: (view: TeamView) => void }) {
   };
 
   return (
-    <form onSubmit={submit} style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 16 }}>
-      <label htmlFor="invite-email">
-        <strong>Add a member</strong> — the email they signed in to Neurix with
+    <form onSubmit={submit} className="mt-4 flex flex-col gap-2 border-t border-border pt-4">
+      <label htmlFor="invite-email" className="text-xs text-muted-foreground">
+        Add a member — the email they signed in to Neurix with
       </label>
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-        <input
+      <div className="flex gap-2">
+        <Input
           id="invite-email"
           type="email"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
           placeholder="name@company.com"
           required
-          style={{ flex: "1 1 220px", minWidth: 0 }}
+          className="min-w-0"
         />
-        <button type="submit" disabled={busy || !email.trim()}>
-          {busy ? "Adding..." : "Add"}
-        </button>
+        <Button type="submit" disabled={busy || !email.trim()}>
+          {busy ? "Adding…" : "Add"}
+        </Button>
       </div>
-      {message && <p style={{ color: message.ok ? "#15803d" : "#b91c1c", margin: 0 }}>{message.text}</p>}
+      {message && (
+        <p className={message.ok ? "text-sm text-emerald-400" : "text-sm text-status-failed"}>{message.text}</p>
+      )}
     </form>
   );
 }
 
 /**
- * The Team page. No team: a create form. Member: a read-only member list.
+ * The Team panel. No team: a create form. Member: a read-only member list.
  * Admin: the same list plus add-by-email and remove. The backend enforces
  * every rule (admin only, one team per person, never zero admins); this
  * only decides what to show.
@@ -100,9 +112,12 @@ export default function TeamManagement({ team, onChange }: { team: TeamView; onC
 
   const isAdmin = team.org.role === "admin";
   const adminCount = team.members.filter((m) => m.role === "admin").length;
+  // Same member order as the team graph, so an avatar matches its graph color.
+  const colorOf = memberColors(team.members);
 
   const remove = async (userId: string, name: string) => {
-    if (!window.confirm(`Remove ${name} from ${team.org?.name}? Notes they already shared stay in the team space.`)) return;
+    if (!window.confirm(`Remove ${name} from ${team.org?.name}? Notes they already shared stay in the team space.`))
+      return;
     setRemoving(userId);
     setError(null);
     try {
@@ -115,51 +130,109 @@ export default function TeamManagement({ team, onChange }: { team: TeamView; onC
   };
 
   return (
-    <div>
-      <p style={{ marginTop: 0 }}>
-        <strong>{team.org.name}</strong> · {team.members.length} member{team.members.length === 1 ? "" : "s"} · you're{" "}
-        {isAdmin ? "an admin" : "a member"}
-        {!isAdmin && " (only an admin can change the team)"}
-      </p>
-      <div style={{ overflowX: "auto" }}>
-        <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 14 }}>
-          <thead>
-            <tr>
-              <th style={cell}>Name</th>
-              <th style={cell}>Email</th>
-              <th style={cell}>Role</th>
-              <th style={cell}>Shared notes</th>
-              {isAdmin && <th style={cell} aria-label="Actions" />}
-            </tr>
-          </thead>
-          <tbody>
-            {team.members.map((m) => {
-              const lastAdmin = m.role === "admin" && adminCount === 1;
-              return (
-                <tr key={m.user_id}>
-                  <td style={cell}>
-                    {m.name}
-                    {m.is_me ? " (you)" : ""}
-                  </td>
-                  <td style={cell}>{m.email ?? "—"}</td>
-                  <td style={cell}>{m.role === "admin" ? "Admin" : "Member"}</td>
-                  <td style={cell}>{m.shared_notes}</td>
-                  {isAdmin && (
-                    <td style={{ ...cell, textAlign: "right" }}>
-                      {!lastAdmin && (
-                        <button type="button" onClick={() => remove(m.user_id, m.name)} disabled={removing !== null}>
-                          {removing === m.user_id ? "Removing..." : "Remove"}
-                        </button>
-                      )}
-                    </td>
-                  )}
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+    <div className="flex min-h-0 flex-col">
+      <div className="mb-3">
+        <h2 className="truncate text-base font-semibold" title={team.org.name}>
+          {team.org.name}
+        </h2>
+        <p className="text-xs text-subtle-foreground">
+          {team.members.length} member{team.members.length === 1 ? "" : "s"} · you're{" "}
+          {isAdmin ? "an admin" : "a member"}
+          {!isAdmin && " (only an admin can change the team)"}
+        </p>
       </div>
-      {error && <p style={{ color: "#b91c1c" }}>{error}</p>}
+      <Table className="table-fixed">
+        <TableHeader>
+          <TableRow className="hover:bg-transparent">
+            <TableHead className="h-8 px-0 text-xs font-normal text-subtle-foreground">Member</TableHead>
+            <TableHead className="h-8 w-[66px] px-1 text-xs font-normal text-subtle-foreground">Role</TableHead>
+            <TableHead
+              className="h-8 w-[38px] px-1 text-right text-xs font-normal text-subtle-foreground"
+              title="Notes they shared to the team"
+            >
+              Notes
+            </TableHead>
+            {isAdmin && (
+              <TableHead className="h-8 w-7 px-0">
+                <span className="sr-only">Actions</span>
+              </TableHead>
+            )}
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {team.members.map((m) => {
+            const lastAdmin = m.role === "admin" && adminCount === 1;
+            return (
+              <TableRow key={m.user_id} className="hover:bg-white/[0.03]">
+                <TableCell className="px-0 py-2.5">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <Avatar className="h-7 w-7 flex-none">
+                      <AvatarFallback
+                        className="text-[11px] font-semibold text-white"
+                        style={{ background: colorOf(m.user_id) }}
+                      >
+                        {initials(m.name)}
+                      </AvatarFallback>
+                    </Avatar>
+                    <div className="min-w-0">
+                      <p className="truncate text-sm" title={m.name}>
+                        {m.name}
+                        {m.is_me && <span className="text-subtle-foreground"> (you)</span>}
+                      </p>
+                      {m.email && (
+                        <p className="truncate text-xs text-subtle-foreground" title={m.email}>
+                          {m.email}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </TableCell>
+                <TableCell className="px-1 py-2.5">
+                  <Badge
+                    variant="secondary"
+                    className={cn(
+                      "px-2 font-medium",
+                      m.role === "admin"
+                        ? "bg-primary/20 text-violet-200 hover:bg-primary/20"
+                        : "text-muted-foreground hover:bg-secondary",
+                    )}
+                  >
+                    {m.role === "admin" ? "Admin" : "Member"}
+                  </Badge>
+                </TableCell>
+                <TableCell className="px-1 py-2.5 text-right tabular-nums text-muted-foreground">
+                  {m.shared_notes}
+                </TableCell>
+                {isAdmin && (
+                  <TableCell className="px-0 py-2.5 text-right">
+                    {!lastAdmin && (
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7 text-subtle-foreground hover:text-foreground"
+                            onClick={() => remove(m.user_id, m.name)}
+                            disabled={removing !== null}
+                            aria-label={`Remove ${m.name} from the team`}
+                          >
+                            <X />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent className="text-xs">
+                          {removing === m.user_id ? "Removing…" : "Remove from team"}
+                        </TooltipContent>
+                      </Tooltip>
+                    )}
+                  </TableCell>
+                )}
+              </TableRow>
+            );
+          })}
+        </TableBody>
+      </Table>
+      {error && <p className="mt-2 text-sm text-status-failed">{error}</p>}
       {isAdmin && <InviteMember onChange={onChange} />}
     </div>
   );

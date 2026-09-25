@@ -9,17 +9,30 @@ from sqlalchemy.engine import Connection
 
 
 def get_membership(conn: Connection, user_id: str) -> dict[str, Any] | None:
-    """The caller's org: {org_id, name, role}, or None."""
+    """The caller's org: {org_id, name, role, slack_workspace_url}, or None."""
     row = conn.execute(
         text(
-            "SELECT o.id, o.name, m.role FROM org_members m JOIN orgs o ON o.id = m.org_id "
+            "SELECT o.id, o.name, m.role, o.slack_workspace_url FROM org_members m JOIN orgs o ON o.id = m.org_id "
             "WHERE m.uid = :uid ORDER BY m.joined_at LIMIT 1"
         ),
         {"uid": user_id},
     ).first()
     if row is None:
         return None
-    return {"org_id": str(row.id), "name": row.name, "role": row.role}
+    return {"org_id": str(row.id), "name": row.name, "role": row.role, "slack_workspace_url": row.slack_workspace_url}
+
+
+def set_slack_workspace(conn: Connection, *, org_id: str, team_id: str, url: str, overwrite: bool) -> bool:
+    """Link an org to its Slack workspace. Without `overwrite`, only an org
+    with no workspace yet is linked (first one wins). -> whether a row changed."""
+    result = conn.execute(
+        text(
+            "UPDATE orgs SET slack_team_id = :team_id, slack_workspace_url = :url "
+            "WHERE id = :org_id AND (:overwrite OR slack_team_id IS NULL)"
+        ),
+        {"org_id": org_id, "team_id": team_id, "url": url, "overwrite": overwrite},
+    )
+    return result.rowcount > 0
 
 
 def create_org(conn: Connection, *, name: str, created_by: str, display_name: str | None) -> str:

@@ -134,6 +134,25 @@ def _edges(rows) -> list[dict[str, Any]]:
     ]
 
 
+def _keys_by_node(conn: Connection, ids: list[str]) -> dict[str, list[str]]:
+    """node_id -> its extracted key texts (node_keys -> key_pool), for the
+    web graphs' "Show keys" view. Grouped by text on the client, so a key
+    two owners both extracted is one key there, as in share scoring."""
+    if not ids:
+        return {}
+    rows = conn.execute(
+        text(
+            "SELECT nk.node_id, kp.key_text FROM node_keys nk JOIN key_pool kp ON kp.id = nk.key_id "
+            "WHERE nk.node_id = ANY(CAST(:ids AS uuid[])) ORDER BY nk.node_id, kp.key_text"
+        ),
+        {"ids": ids},
+    ).all()
+    result: dict[str, list[str]] = {}
+    for r in rows:
+        result.setdefault(str(r.node_id), []).append(r.key_text)
+    return result
+
+
 def get_graph(conn: Connection, user_id: str) -> dict[str, list[dict[str, Any]]]:
     """The user's personal graph: their own nodes plus nodes from accepted
     person shares, and the connection rows scoped to them (their own
@@ -151,6 +170,7 @@ def get_graph(conn: Connection, user_id: str) -> dict[str, list[dict[str, Any]]]
     ).all()
     ids = [str(n.id) for n in nodes]
     edges = conn.execute(text(_EDGES + "AND c.user_id = :user_id GROUP BY 1, 2"), {"user_id": user_id, "ids": ids}).all()
+    keys = _keys_by_node(conn, ids)
     return {
         "nodes": [
             {
@@ -159,6 +179,7 @@ def get_graph(conn: Connection, user_id: str) -> dict[str, list[dict[str, Any]]]
                 "status": n.status,
                 "owner_id": str(n.user_id),
                 "shared": str(n.user_id) != user_id,
+                "keys": keys.get(str(n.id), []),
             }
             for n in nodes
         ],
@@ -181,6 +202,7 @@ def get_team_graph(conn: Connection, org_id: str) -> dict[str, list[dict[str, An
     ).all()
     ids = [str(n.id) for n in nodes]
     edges = conn.execute(text(_EDGES + "AND c.org_id = :org_id GROUP BY 1, 2"), {"org_id": org_id, "ids": ids}).all()
+    keys = _keys_by_node(conn, ids)
     return {
         "nodes": [
             {
@@ -189,6 +211,7 @@ def get_team_graph(conn: Connection, org_id: str) -> dict[str, list[dict[str, An
                 "status": n.status,
                 "owner_id": str(n.user_id),
                 "shared": True,
+                "keys": keys.get(str(n.id), []),
             }
             for n in nodes
         ],

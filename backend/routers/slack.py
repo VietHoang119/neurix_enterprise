@@ -12,11 +12,13 @@ import logging
 from urllib.parse import parse_qs
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, status
+from fastapi.responses import RedirectResponse
 
 from core.config import settings
 from services.slack import handlers
 from services.slack import share_blocks as sb
 from services.slack import team_handlers
+from services.slack.api import oauth_access
 from services.slack.signature import is_valid_slack_signature
 
 logger = logging.getLogger(__name__)
@@ -71,6 +73,20 @@ def _form(body: bytes) -> dict[str, str]:
 @router.post("/commands")
 async def commands(request: Request, background_tasks: BackgroundTasks):
     form = _form(await _verified_body(request))
+    response = _command(form, background_tasks)
+    # Queued last: BackgroundTasks run in order, so a `team create` has made
+    # the team by the time this looks for it.
+    if form.get("team_id") and form.get("user_id"):
+        background_tasks.add_task(
+            _logged(team_handlers.link_workspace),
+            slack_user=form["user_id"],
+            team_id=form["team_id"],
+            team_domain=form.get("team_domain") or None,
+        )
+    return response
+
+
+def _command(form: dict[str, str], background_tasks: BackgroundTasks) -> dict:
     subcommand, _, rest = (form.get("text") or "").strip().partition(" ")
     subcommand, rest = subcommand.lower(), rest.strip()
     slack_user = form.get("user_id", "")
@@ -125,6 +141,35 @@ async def commands(request: Request, background_tasks: BackgroundTasks):
         return {"response_type": "ephemeral", "text": "⏳ Opening..."}
 
     return {"response_type": "ephemeral", "text": HELP_TEXT}
+
+
+@router.get("/oauth/callback")
+async def oauth_callback(code: str | None = None, error: str | None = None):
+    """Slack's redirect after someone installs the app ("Add to Slack").
+    Exchanges the code and links the installer's team to that workspace,
+    then sends them to the web app. The bot token in the response is not
+    stored: the backend still runs on the one SLACK_BOT_TOKEN."""
+    if not (settings.SLACK_CLIENT_ID and settings.SLACK_CLIENT_SECRET):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    outcome = "cancelled"
+    if code and not error:
+        try:
+            data = await oauth_access(
+                client_id=settings.SLACK_CLIENT_ID,
+                client_secret=settings.SLACK_CLIENT_SECRET,
+                code=code,
+                redirect_uri=settings.SLACK_OAUTH_REDIRECT_URI,
+            )
+            linked = await team_handlers.link_installer_workspace(
+                bot_token=data.get("access_token") or "",
+                installer_slack=(data.get("authed_user") or {}).get("id") or "",
+                team_id=(data.get("team") or {}).get("id") or "",
+            )
+            outcome = "linked" if linked else "installed"
+        except Exception:  # Slack, network, or DB: the person still lands on the web app
+            logger.exception("SLACK_OAUTH_FAILED")
+            outcome = "error"
+    return RedirectResponse(f"{settings.FRONTEND_URL}/?slack_install={outcome}", status_code=status.HTTP_302_FOUND)
 
 
 @router.post("/interactions")

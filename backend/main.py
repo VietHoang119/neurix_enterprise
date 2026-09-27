@@ -4,10 +4,16 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from core.config import settings
+from core.config import settings, validate_production_config
 from routers import health, nodes, slack, team
 
 logging.basicConfig(level=logging.INFO)
+
+# Fail fast rather than starting half-configured: a missing required setting
+# in production must stop the app here, with a clear message naming exactly
+# what's missing, not surface later as a confusing runtime error. No-op
+# outside MODE=production.
+validate_production_config()
 
 app = FastAPI(
     title="Neurix Enterprise API",

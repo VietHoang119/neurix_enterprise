@@ -96,3 +96,35 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+# Settings that must be a real, non-empty value in production. A missing one
+# otherwise fails late and confusingly — e.g. an unset DB_NAME leaves pg8000
+# connecting to a database named after DB_USER instead of erroring clearly.
+# Deliberately not required outside production: local dev against
+# LOCAL_DATABASE_URL doesn't need Cloud SQL/Firebase/Slack settings at all.
+REQUIRED_IN_PRODUCTION = (
+    "DB_NAME",
+    "DB_USER",
+    "DB_PASSWORD",
+    "INSTANCE_CONNECTION_NAME",
+    "FRONTEND_URL",
+    "FIREBASE_PROJECT_ID",
+)
+
+
+class ConfigError(RuntimeError):
+    """MODE=production but one or more REQUIRED_IN_PRODUCTION settings are
+    missing or empty."""
+
+
+def validate_production_config(s: Settings | None = None) -> None:
+    """Call at application startup (see main.py). No-op unless MODE is
+    exactly "production" — local/dev runs are never forced to set these."""
+    s = s or settings
+    if s.MODE != "production":
+        return
+    missing = [name for name in REQUIRED_IN_PRODUCTION if not getattr(s, name)]
+    if missing:
+        raise ConfigError(
+            "MODE=production but required settings are missing or empty: " + ", ".join(missing)
+        )

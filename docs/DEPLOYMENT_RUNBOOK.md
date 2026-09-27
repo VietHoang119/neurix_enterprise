@@ -11,6 +11,8 @@ Variables used throughout (substitute your own):
 - `SQL_INSTANCE` = `neurix-enterprise-db`
 - `DB_NAME` = `neurix`
 - `DB_APP_USER` = `neurix_app`
+- `TENANT_ID` = a short slug identifying this deployment (e.g. `acme`) — see
+  step 11
 
 ---
 
@@ -81,27 +83,76 @@ CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS unaccent;
 ```
 
-## 5. Run migrations (as `postgres`, in order)
+`0001_init_from_neurix.sql` already contains both `CREATE EXTENSION IF NOT
+EXISTS` statements, so the migration runner (§5) creates these
+automatically when it applies 0001 as `postgres`. This manual step is kept
+here only as an optional early sanity check (e.g. to confirm the `vector`
+extension is available on the instance before running anything else) — it
+is no longer strictly required as a separate step.
 
-Use the committed, fixed files in `backend/db/migrations/` — not any raw
-handoff doc text. Quit interactive psql (`\q`) and run each with `-f`:
+## 5. Run migrations — `scripts/run_migrations.py` (safe to re-run)
+
+As of the backend hardening pass, migrations are no longer applied by hand
+with `psql -f` one file at a time. `backend/scripts/run_migrations.py` reads
+`backend/db/migrations/*.sql` in filename order, tracks what's already been
+applied in a `schema_migrations` table, and runs only what's missing — each
+migration in its own transaction. On failure it stops and names exactly
+which file failed; migrations before it stay applied, so re-running after a
+fix resumes from there instead of re-attempting ones already applied. It is
+always safe to run, including with nothing new to apply.
+
+Current migrations, applied in this order:
+
+| File | What it does |
+|---|---|
+| `0001_init_from_neurix.sql` | Base schema ported from `neurix`, plus the `vector`/`unaccent` extensions and the `auth.users` shim |
+| `0002_enterprise_extensions.sql` | Additive org/share-workflow tables and constraints |
+| `0003_retrieval_org_scope.sql` | Adds an optional `org_id` overload to `retrieve_candidate_nodes` |
+| `0004_share_workflow_indexes.sql` | Indexes only (one open invite per note+person, a note in a team space once) |
+| `0005_org_slack_workspace.sql` | Adds `orgs.slack_team_id` / `orgs.slack_workspace_url` (nullable) |
+
+Run it from `backend/`, pointed at the Cloud SQL instance directly (it uses
+the same `db.session.get_engine()` the app itself uses — no separate
+`--database-url` flag, and no need for the Cloud SQL Proxy from step 3 as
+long as `gcloud auth application-default login` from step 1 is current):
+
+```bash
+cd backend
+INSTANCE_CONNECTION_NAME="PROJECT_ID:REGION:SQL_INSTANCE" \
+DB_USER="postgres" \
+DB_PASSWORD="<postgres root password>" \
+DB_NAME="DB_NAME" \
+python -m scripts.run_migrations
+```
+
+**Must be run as `postgres`, not `neurix_app`** — `neurix_app` has no DDL
+permission, same as every earlier manual migration in this project's
+history.
+
+**Going forward:** whenever a new migration file lands (`0006_...sql` and
+up), run this exact command again before deploying the code that depends on
+it. The script skips anything already recorded, so running it with nothing
+new to apply is a harmless no-op — there's no need to track "have I already
+run this" separately.
+
+Verify via the tracking table itself (through the Cloud SQL Proxy from step
+3):
 
 ```bash
 psql "host=127.0.0.1 port=5432 sslmode=disable dbname=DB_NAME user=postgres" \
-  -f /path/to/repo/backend/db/migrations/0001_init_from_neurix.sql
-
-psql "host=127.0.0.1 port=5432 sslmode=disable dbname=DB_NAME user=postgres" \
-  -f /path/to/repo/backend/db/migrations/0002_enterprise_extensions.sql
-
-psql "host=127.0.0.1 port=5432 sslmode=disable dbname=DB_NAME user=postgres" \
-  -f /path/to/repo/backend/db/migrations/0003_retrieval_org_scope.sql
-
-psql "host=127.0.0.1 port=5432 sslmode=disable dbname=DB_NAME user=postgres" \
-  -f /path/to/repo/backend/db/migrations/0004_share_workflow_indexes.sql
+  -c "SELECT * FROM schema_migrations ORDER BY version;"
 ```
 
-`NOTICE: ivfflat index created with little data` is expected on an empty
-table — not an error.
+Expect one row per file above. `NOTICE: ivfflat index created with little
+data` during 0001 is expected on an empty table — not an error.
+
+**Existing (pre-runner) deployments**: if a database already has 0001
+applied by hand (no `schema_migrations` row for it), the runner detects this
+by probing for `node_pool` and records `0001` as applied without
+re-running its SQL, since 0001's `CREATE TABLE` statements are not
+idempotent. 0002–0005 are all written with `IF NOT EXISTS` /
+`pg_constraint` guards, so they're simply re-run as no-ops and recorded
+normally.
 
 ## 6. Grant `neurix_app` privileges (as `postgres`)
 
@@ -236,10 +287,55 @@ gcloud run deploy neurix-backend \
   --service-account=neurix-backend-run@PROJECT_ID.iam.gserviceaccount.com \
   --build-service-account=projects/PROJECT_ID/serviceAccounts/neurix-cloudbuild-run@PROJECT_ID.iam.gserviceaccount.com \
   --add-cloudsql-instances=PROJECT_ID:REGION:SQL_INSTANCE \
-  --set-env-vars="MODE=production,FIREBASE_PROJECT_ID=PROJECT_ID,INSTANCE_CONNECTION_NAME=PROJECT_ID:REGION:SQL_INSTANCE,DB_USER=DB_APP_USER,DB_NAME=DB_NAME,FRONTEND_URL=https://PROJECT_ID.web.app" \
+  --set-env-vars="MODE=production,FIREBASE_PROJECT_ID=PROJECT_ID,INSTANCE_CONNECTION_NAME=PROJECT_ID:REGION:SQL_INSTANCE,DB_USER=DB_APP_USER,DB_NAME=DB_NAME,FRONTEND_URL=https://PROJECT_ID.web.app,TENANT_ID=TENANT_ID" \
   --set-secrets="DB_PASSWORD=neurix-app-db-password:latest" \
   --allow-unauthenticated
 ```
+
+### Required production settings (fail-fast on startup)
+
+`MODE=production` turns on a startup check (`core/config.py`,
+`validate_production_config()`, called from `main.py` before the app object
+is even built) that raises and refuses to start if any of the following are
+missing or empty — the error names exactly which ones, so a partially
+configured deploy fails immediately and legibly instead of misbehaving at
+request time:
+
+- `DB_NAME`
+- `DB_USER`
+- `DB_PASSWORD`
+- `INSTANCE_CONNECTION_NAME`
+- `FRONTEND_URL`
+- `FIREBASE_PROJECT_ID`
+- `TENANT_ID`
+
+**`TENANT_ID`** is new as of this pass and must be set before deploying this
+version of the code, or the service will fail to start under
+`MODE=production`. Today it does one thing: it's prefixed onto every new
+raw-storage object path (`{TENANT_ID}/raw/{uid}/...` in
+`services/raw_storage.py`) so a shared bucket can't have two tenants'
+objects collide, and a path alone tells you which tenant wrote it. It's also
+intended as the basis for future per-tenant labeling/reporting as more
+tenants are onboarded. Pick a short, stable slug (e.g. `acme`) — existing
+raw-storage objects written before this was set keep resolving from their
+own stored path, so changing it later doesn't break old files, it just
+changes the prefix for new ones.
+
+This check does not apply outside `MODE=production` — local dev against
+`LOCAL_DATABASE_URL` needs none of the above.
+
+**Optional tuning/feature settings** (not required, safe to leave unset):
+
+- `DB_POOL_SIZE` (default `5`) / `DB_MAX_OVERFLOW` (default `10`) —
+  SQLAlchemy connection pool sizing (`db/session.py`). The defaults match
+  SQLAlchemy's own defaults. Tune down per Cloud Run service when several
+  services share one Cloud SQL instance's `max_connections`, since the right
+  pool size depends on how many instances a given tenant's service scales
+  to.
+- `ALLOWED_EMAIL_DOMAINS` — comma-separated list (e.g. `acme.com,acme.io`).
+  Unset by default (no restriction — anyone with a valid Firebase ID token
+  can sign in). When set, it only gates a brand-new `auth.users` row being
+  created on first sign-in; it never affects a user who already exists.
 
 **Gotcha #1**: `gcloud run deploy --source` builds using the **default
 Compute Engine SA**, not the legacy Cloud Build SA — and on newer projects
@@ -433,9 +529,9 @@ prints `false`.
 
 ## 15. Week 3: team, share, insights, raw files
 
-**Migration**: apply `0004_share_workflow_indexes.sql` (§5). It only adds
-indexes (one open invite per note+person, a note in a team space once);
-no column changes.
+**Migration**: run the migration runner (§5) to pick up
+`0004_share_workflow_indexes.sql`. It only adds indexes (one open invite per
+note+person, a note in a team space once); no column changes.
 
 **Slack App**: no new scopes or URLs — modals and buttons use the existing
 Interactivity URL, and `users.lookupByEmail` uses `users:read.email`.
@@ -450,6 +546,10 @@ gcloud storage buckets create gs://PROJECT_ID-neurix-raw --project=PROJECT_ID \
 gcloud storage buckets add-iam-policy-binding gs://PROJECT_ID-neurix-raw \
   --member="serviceAccount:neurix-backend-run@PROJECT_ID.iam.gserviceaccount.com" \
   --role="roles/storage.objectAdmin"
+# NOTE: this grants object admin on the WHOLE bucket, matching today's
+# single-tenant setup (TENANT_ID only prefixes object paths within it — it
+# does not isolate access). See "Preparing for a second tenant" near the
+# end of this document before onboarding a second tenant onto this bucket.
 # Signed URLs on Cloud Run are signed through IAM signBlob: the runtime SA
 # must be allowed to create tokens for itself.
 gcloud iam service-accounts add-iam-policy-binding \
@@ -471,8 +571,9 @@ Redeploy the frontend (§12) for the Team graph panel.
 
 ## 16. Web UI polish: dashboard, graph tabs + keys, Slack workspace link
 
-**Migration**: apply `0005_org_slack_workspace.sql` (§5). Additive:
-`orgs.slack_team_id` and `orgs.slack_workspace_url`, both nullable.
+**Migration**: run the migration runner (§5) to pick up
+`0005_org_slack_workspace.sql`. Additive: `orgs.slack_team_id` and
+`orgs.slack_workspace_url`, both nullable.
 
 **Linking a team to its Slack workspace** (the web "Open Neurix Workspace"
 button; disabled with an explanation until a team is linked):
@@ -492,6 +593,44 @@ button; disabled with an explanation until a team is linked):
   the single `SLACK_BOT_TOKEN`, so this is not multi-workspace support.
 
 No new Slack scopes. Redeploy backend and frontend (§12).
+
+---
+
+## 17. Preparing for a second tenant
+
+This deployment model is still one dedicated stack per tenant (§0), and
+`TENANT_ID` today only prefixes raw-storage object paths — it is not
+tenant isolation. Before actually running two tenants against shared
+infrastructure, these single-tenant assumptions need attention first:
+
+- **Storage bucket and IAM**: step 15 grants `roles/storage.objectAdmin` on
+  the *entire* raw-storage bucket to the single runtime service account.
+  That's fine when there's one tenant's data in the bucket; it stops being
+  fine once a second tenant's objects live there too, since the `TENANT_ID`
+  path prefix is just a naming convention, not an access boundary. Moving to
+  per-tenant buckets (or per-tenant IAM conditions scoped to each tenant's
+  prefix) is the change to make first.
+- **Secrets and service accounts**: `neurix-app-db-password`,
+  `slack-bot-token`, `slack-signing-secret`, and `gemini-api-key` are all
+  created today as one secret per name, with no tenant suffix, and one
+  runtime service account (`neurix-backend-run`) reads all of them. A second
+  tenant needs its own secrets (e.g. `slack-bot-token-<tenant>`) and, if
+  tenants shouldn't be able to read each other's, its own service
+  account(s) too.
+- **Frontend build-time config**: `frontend/.env` (Firebase Web SDK config,
+  `VITE_API_BASE_URL`) is baked in at `npm run build` time — there is no
+  runtime config equivalent in this repo. Each tenant needs its own build
+  and its own Firebase Hosting deploy; a single build cannot serve two
+  tenants' backends.
+- **Database**: this runbook still assumes one Cloud SQL database per
+  deployment (`DB_NAME`), with `neurix_app` granted broadly across `public`
+  and `auth`. Whether a second tenant gets its own database, its own schema,
+  or shares one with row-level scoping is an open design question, not
+  something the current schema/migrations already handle.
+
+None of this is done today — treat this section as a punch list for when a
+second tenant is actually being onboarded, not a description of existing
+multi-tenant support.
 
 ---
 

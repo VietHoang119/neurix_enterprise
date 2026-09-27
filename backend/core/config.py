@@ -23,6 +23,12 @@ class Settings(BaseSettings):
 
     # Firebase Auth (ID token verification in core/auth.py)
     FIREBASE_PROJECT_ID: str | None = None
+    # Comma-separated list (e.g. "acme.com,acme.io"). Unset (default): no
+    # restriction — every tenant signs in with the same shared Firebase Auth
+    # project, and not every tenant wants a domain restriction. When set,
+    # only gates a brand-new auth.users row being created — never affects an
+    # existing user.
+    ALLOWED_EMAIL_DOMAINS: str | None = None
 
     # Cloud SQL (Postgres 15+, pgvector), via the Cloud SQL Python Connector —
     # works both on Cloud Run and locally against the same instance, with no

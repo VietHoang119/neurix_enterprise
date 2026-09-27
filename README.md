@@ -174,23 +174,40 @@ team-sharing (`share_node.org_id`) extends this same reference model — see
 
 1. Create a GCP project. Enable the Cloud Run, Cloud SQL Admin, and Firebase
    APIs.
-2. Create a Cloud SQL Postgres 15+ instance, then apply, in order:
+2. Create a Cloud SQL Postgres 15+ instance, then apply all pending
+   migrations with the migration runner (run as `postgres`, not the app's
+   `neurix_app` user, which has no DDL permission; safe to re-run):
    ```bash
-   psql "$CONNECTION" -f backend/db/migrations/0001_init_from_neurix.sql
-   psql "$CONNECTION" -f backend/db/migrations/0002_enterprise_extensions.sql
-   psql "$CONNECTION" -f backend/db/migrations/0003_retrieval_org_scope.sql
-   psql "$CONNECTION" -f backend/db/migrations/0004_share_workflow_indexes.sql
+   cd backend
+   INSTANCE_CONNECTION_NAME="$CONNECTION" DB_USER=postgres DB_PASSWORD="$POSTGRES_PASSWORD" DB_NAME=neurix \
+     python -m scripts.run_migrations
    ```
+   This applies `0001_init_from_neurix.sql` through
+   `0005_org_slack_workspace.sql` (whatever isn't already recorded in the
+   `schema_migrations` table it maintains) — see `docs/DEPLOYMENT_RUNBOOK.md`
+   §5 for the full migration list and the manual `GRANT` step that still
+   follows it for `neurix_app`.
 3. Create a Firebase project **linked to the same GCP project**. Enable
    Authentication -> Google provider, and enable Hosting.
 4. Deploy the backend to Cloud Run from `backend/Dockerfile`, with the Cloud
-   SQL instance attached and `FIREBASE_PROJECT_ID` / `INSTANCE_CONNECTION_NAME`
-   / `DB_USER` / `DB_PASSWORD` / `DB_NAME` set as env vars (see
-   `backend/.env.sample`).
+   SQL instance attached. Under `MODE=production`, `DB_NAME`, `DB_USER`,
+   `DB_PASSWORD`, `INSTANCE_CONNECTION_NAME`, `FRONTEND_URL`,
+   `FIREBASE_PROJECT_ID`, and `TENANT_ID` are all required — the app fails
+   fast at startup naming exactly which ones are missing if any are unset
+   (see `backend/.env.sample` and `docs/DEPLOYMENT_RUNBOOK.md` §11).
+   `TENANT_ID` is a short slug for this deployment (e.g. `acme`); it prefixes
+   raw-storage object paths so a shared bucket can't collide across
+   deployments. `DB_POOL_SIZE`/`DB_MAX_OVERFLOW` and `ALLOWED_EMAIL_DOMAINS`
+   are optional (see the runbook for defaults and behavior).
 5. Fill in `frontend/.env` from `frontend/.env.sample` (Firebase Web SDK
    config + the Cloud Run URL), then `npm run build` and
    `firebase deploy --only hosting` from `frontend/` (after setting the real
    project id in `.firebaserc`).
+
+This deployment model is one dedicated stack per tenant — see
+"Preparing for a second tenant" in `docs/DEPLOYMENT_RUNBOOK.md` (§17) for
+what's still single-tenant-assumed (shared bucket IAM, unsuffixed secrets,
+build-time frontend config) before onboarding a second one.
 
 ## Local development
 
@@ -199,6 +216,7 @@ team-sharing (`share_node.org_id`) extends this same reference model — see
 cd backend
 pip install -r requirements.txt
 cp .env.sample .env   # fill in FIREBASE_PROJECT_ID at minimum
+python -m scripts.run_migrations   # applies backend/db/migrations against whichever DB your .env points at
 uvicorn main:app --reload --port 8000
 
 # Frontend

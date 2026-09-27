@@ -8,6 +8,9 @@
 -- distinct overload in Postgres rather than replacing the original 6-arg
 -- function — both coexist, which is fine since existing call sites using 6
 -- positional args keep working unchanged.
+--
+-- Already idempotent as written (CREATE OR REPLACE) — no change needed for
+-- the schema_migrations runner in scripts/run_migrations.py.
 -- =============================================================================
 
 CREATE OR REPLACE FUNCTION public.retrieve_candidate_nodes(

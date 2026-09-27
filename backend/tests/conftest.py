@@ -60,6 +60,32 @@ def database_url():
 
 
 @pytest.fixture
+def empty_database_url():
+    """A freshly created database with none of the migrations applied yet —
+    for exercising the migration runner (scripts/run_migrations.py) itself
+    against a from-scratch tenant database, as opposed to `database_url`
+    above (which is pre-migrated for every other test's use)."""
+    from sqlalchemy import create_engine, text
+
+    try:
+        admin = create_engine(SERVER_URL, isolation_level="AUTOCOMMIT")
+        with admin.connect() as conn:
+            conn.execute(text("SELECT 1"))
+    except Exception as exc:  # pragma: no cover - environment dependent
+        pytest.skip(f"No Postgres available at TEST_DATABASE_URL: {exc}")
+
+    name = f"neurix_test_empty_{uuid.uuid4().hex[:8]}"
+    with admin.connect() as conn:
+        conn.execute(text(f"CREATE DATABASE {name}"))
+    url = SERVER_URL.rsplit("/", 1)[0] + "/" + name
+
+    yield url
+
+    with admin.connect() as conn:
+        conn.execute(text(f"DROP DATABASE {name} WITH (FORCE)"))
+
+
+@pytest.fixture
 def db(database_url, monkeypatch):
     """Point the app at the test DB, and empty all app tables afterwards."""
     monkeypatch.setattr(settings, "LOCAL_DATABASE_URL", database_url)

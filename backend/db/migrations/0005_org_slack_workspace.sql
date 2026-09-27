@@ -14,7 +14,10 @@
 -- created before this migration and workspaces installed from the Slack app
 -- dashboard, which never hits our callback). Both stay NULL until then; the
 -- web button is disabled while they are.
+--
+-- Idempotent (retrofitted for the schema_migrations runner in
+-- scripts/run_migrations.py): IF NOT EXISTS on both columns.
 -- =============================================================================
 
-ALTER TABLE orgs ADD COLUMN slack_team_id text;
-ALTER TABLE orgs ADD COLUMN slack_workspace_url text;
+ALTER TABLE orgs ADD COLUMN IF NOT EXISTS slack_team_id text;
+ALTER TABLE orgs ADD COLUMN IF NOT EXISTS slack_workspace_url text;

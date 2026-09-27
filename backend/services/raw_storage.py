@@ -23,12 +23,20 @@ TEXT_NOTE_NAME = "note.txt"
 
 
 def object_path(user_id: str, filename: str | None, now: float | None = None) -> str:
-    """raw/{uid}/{timestamp}-{filename_or_note}. The timestamp carries a short
-    random suffix: two notes saved in the same second must not overwrite
-    each other's original."""
+    """{TENANT_ID}/raw/{uid}/{timestamp}-{filename_or_note} (just
+    raw/{uid}/... when TENANT_ID is unset — a single-tenant/local setup).
+    The timestamp carries a short random suffix: two notes saved in the
+    same second must not overwrite each other's original.
+
+    Write side only: reads always go through whatever path was already
+    stored in node_pool.metadata.raw_storage_path (services/raw_files.py),
+    so this only changes the shape of new writes going forward — existing
+    rows keep resolving via their own stored path, unprefixed or not.
+    """
     name = re.sub(r"[^A-Za-z0-9._-]+", "_", filename or TEXT_NOTE_NAME).strip("._") or TEXT_NOTE_NAME
     stamp = time.strftime("%Y%m%dT%H%M%S", time.gmtime(time.time() if now is None else now)) + uuid.uuid4().hex[:6]
-    return f"raw/{user_id}/{stamp}-{name[:100]}"
+    prefix = f"{settings.TENANT_ID}/" if settings.TENANT_ID else ""
+    return f"{prefix}raw/{user_id}/{stamp}-{name[:100]}"
 
 
 class RawStorage:

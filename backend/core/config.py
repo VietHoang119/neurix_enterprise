@@ -23,6 +23,12 @@ class Settings(BaseSettings):
 
     # Firebase Auth (ID token verification in core/auth.py)
     FIREBASE_PROJECT_ID: str | None = None
+    # Comma-separated list (e.g. "acme.com,acme.io"). Unset (default): no
+    # restriction — every tenant signs in with the same shared Firebase Auth
+    # project, and not every tenant wants a domain restriction. When set,
+    # only gates a brand-new auth.users row being created — never affects an
+    # existing user.
+    ALLOWED_EMAIL_DOMAINS: str | None = None
 
     # Cloud SQL (Postgres 15+, pgvector), via the Cloud SQL Python Connector —
     # works both on Cloud Run and locally against the same instance, with no
@@ -36,7 +42,25 @@ class Settings(BaseSettings):
     # in Cloud Run — INSTANCE_CONNECTION_NAME takes priority when both are set.
     LOCAL_DATABASE_URL: str | None = None
 
+    # SQLAlchemy engine pool sizing (db/session.py). Defaults match
+    # SQLAlchemy's own defaults (5 + 10 = 15 connections/instance), so this
+    # is a no-op until set. Needs to be tunable per deployment: N Cloud Run
+    # services against one shared Cloud SQL instance will exhaust
+    # max_connections long before CPU or memory becomes the bottleneck, and
+    # the right pool_size depends on how many instances a given tenant's
+    # service scales to.
+    DB_POOL_SIZE: int = 5
+    DB_MAX_OVERFLOW: int = 10
+
     FRONTEND_URL: str = "http://localhost:5173"
+
+    # Identifies this deployment's tenant (e.g. "acme"). Prefixed onto every
+    # new raw-storage object path (services/raw_storage.py) so a shared
+    # bucket can't have one tenant's path shape collide with another's, and
+    # a path alone tells you which tenant it belongs to. Required in
+    # production; unset in a single-tenant/local setup just omits the prefix
+    # (see raw_storage.object_path).
+    TENANT_ID: str | None = None
 
     # Slack App (Week 2). Both come from Secret Manager on Cloud Run
     # (slack-bot-token / slack-signing-secret).
@@ -86,3 +110,36 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+# Settings that must be a real, non-empty value in production. A missing one
+# otherwise fails late and confusingly — e.g. an unset DB_NAME leaves pg8000
+# connecting to a database named after DB_USER instead of erroring clearly.
+# Deliberately not required outside production: local dev against
+# LOCAL_DATABASE_URL doesn't need Cloud SQL/Firebase/Slack settings at all.
+REQUIRED_IN_PRODUCTION = (
+    "DB_NAME",
+    "DB_USER",
+    "DB_PASSWORD",
+    "INSTANCE_CONNECTION_NAME",
+    "FRONTEND_URL",
+    "FIREBASE_PROJECT_ID",
+    "TENANT_ID",
+)
+
+
+class ConfigError(RuntimeError):
+    """MODE=production but one or more REQUIRED_IN_PRODUCTION settings are
+    missing or empty."""
+
+
+def validate_production_config(s: Settings | None = None) -> None:
+    """Call at application startup (see main.py). No-op unless MODE is
+    exactly "production" — local/dev runs are never forced to set these."""
+    s = s or settings
+    if s.MODE != "production":
+        return
+    missing = [name for name in REQUIRED_IN_PRODUCTION if not getattr(s, name)]
+    if missing:
+        raise ConfigError(
+            "MODE=production but required settings are missing or empty: " + ", ".join(missing)
+        )

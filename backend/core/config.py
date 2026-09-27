@@ -48,6 +48,14 @@ class Settings(BaseSettings):
 
     FRONTEND_URL: str = "http://localhost:5173"
 
+    # Identifies this deployment's tenant (e.g. "acme"). Prefixed onto every
+    # new raw-storage object path (services/raw_storage.py) so a shared
+    # bucket can't have one tenant's path shape collide with another's, and
+    # a path alone tells you which tenant it belongs to. Required in
+    # production; unset in a single-tenant/local setup just omits the prefix
+    # (see raw_storage.object_path).
+    TENANT_ID: str | None = None
+
     # Slack App (Week 2). Both come from Secret Manager on Cloud Run
     # (slack-bot-token / slack-signing-secret).
     SLACK_BOT_TOKEN: str | None = None
@@ -109,6 +117,7 @@ REQUIRED_IN_PRODUCTION = (
     "INSTANCE_CONNECTION_NAME",
     "FRONTEND_URL",
     "FIREBASE_PROJECT_ID",
+    "TENANT_ID",
 )
 
 

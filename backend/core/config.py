@@ -36,6 +36,16 @@ class Settings(BaseSettings):
     # in Cloud Run — INSTANCE_CONNECTION_NAME takes priority when both are set.
     LOCAL_DATABASE_URL: str | None = None
 
+    # SQLAlchemy engine pool sizing (db/session.py). Defaults match
+    # SQLAlchemy's own defaults (5 + 10 = 15 connections/instance), so this
+    # is a no-op until set. Needs to be tunable per deployment: N Cloud Run
+    # services against one shared Cloud SQL instance will exhaust
+    # max_connections long before CPU or memory becomes the bottleneck, and
+    # the right pool_size depends on how many instances a given tenant's
+    # service scales to.
+    DB_POOL_SIZE: int = 5
+    DB_MAX_OVERFLOW: int = 10
+
     FRONTEND_URL: str = "http://localhost:5173"
 
     # Slack App (Week 2). Both come from Secret Manager on Cloud Run

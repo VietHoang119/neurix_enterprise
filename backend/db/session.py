@@ -31,10 +31,21 @@ def get_engine() -> Engine:
                 db=settings.DB_NAME,
             )
 
-        return create_engine("postgresql+pg8000://", creator=creator, pool_pre_ping=True)
+        return create_engine(
+            "postgresql+pg8000://",
+            creator=creator,
+            pool_pre_ping=True,
+            pool_size=settings.DB_POOL_SIZE,
+            max_overflow=settings.DB_MAX_OVERFLOW,
+        )
 
     if settings.LOCAL_DATABASE_URL:
-        return create_engine(settings.LOCAL_DATABASE_URL, pool_pre_ping=True)
+        return create_engine(
+            settings.LOCAL_DATABASE_URL,
+            pool_pre_ping=True,
+            pool_size=settings.DB_POOL_SIZE,
+            max_overflow=settings.DB_MAX_OVERFLOW,
+        )
 
     raise RuntimeError(
         "No database configured: set INSTANCE_CONNECTION_NAME (Cloud SQL) "

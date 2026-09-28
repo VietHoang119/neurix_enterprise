@@ -65,6 +65,26 @@ resource "google_sql_database_instance" "main" {
   }
 
   depends_on = [google_project_service.apis]
+
+  # deletion_protection (above) only blocks `terraform destroy` — it does
+  # nothing to stop `terraform apply` from replacing this instance if a
+  # future config change touches a force-new attribute (per the real
+  # hashicorp/google v8.4.0 provider source: name, project, region,
+  # collation, encryption_key_name all force replacement on this resource).
+  # prevent_destroy is the guard against that: any plan that would destroy
+  # this instance (directly, or as the "delete" half of a replace) is
+  # refused by Terraform itself before it ever reaches apply. This is
+  # deliberately unconditional (not tied to a variable) — the one place that
+  # must be able to destroy this instance on purpose is
+  # deploy/scripts/destroy.sh's destroy_platform(), which already works
+  # around deletion_protection by applying with
+  # -var="sql_deletion_protection=false" first; prevent_destroy requires the
+  # same kind of deliberate step (temporarily removing this lifecycle block)
+  # rather than a flag, which is intentional for the instance holding every
+  # tenant's data.
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "google_secret_manager_secret" "sql_root_password" {

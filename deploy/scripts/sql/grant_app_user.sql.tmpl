@@ -1,0 +1,43 @@
+-- Grants for the tenant app DB user, run once after the first migration
+-- pass against a fresh tenant database (scripts/provision.sh migrate phase).
+--
+-- Placeholders (substituted by grant_tenant.py before this runs):
+--   __DB_APP_USER__   the tenant's app_<tenant> role (google_sql_user, created
+--                      by terraform/tenant/main.tf)
+--   __MIGRATION_ROLE__ the role migrations run as (postgres — the same value
+--                      passed as DB_USER to scripts.run_migrations)
+--
+-- Two parts:
+--  1. Explicit grants on whatever tables/sequences already exist (0001-0005
+--     as of this writing).
+--  2. ALTER DEFAULT PRIVILEGES FOR ROLE __MIGRATION_ROLE__, so every table
+--     and sequence a *future* migration creates (0006 and up) is
+--     automatically granted to the app user with no further action here.
+--     This is what ends the "forgot GRANT after migration" failure class —
+--     every past permissions incident in this project's history was
+--     exactly that: a migration landed, nobody re-ran step 6 of the
+--     runbook, and the app got permission-denied errors at request time
+--     instead of at deploy time.
+--
+-- Idempotent: safe to run again (e.g. on a re-run of the migrate phase) —
+-- GRANT and ALTER DEFAULT PRIVILEGES both silently no-op when the privilege
+-- already holds.
+
+GRANT USAGE ON SCHEMA public TO __DB_APP_USER__;
+GRANT USAGE ON SCHEMA auth TO __DB_APP_USER__;
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO __DB_APP_USER__;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA auth TO __DB_APP_USER__;
+
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO __DB_APP_USER__;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA auth TO __DB_APP_USER__;
+
+ALTER DEFAULT PRIVILEGES FOR ROLE __MIGRATION_ROLE__ IN SCHEMA public
+  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO __DB_APP_USER__;
+ALTER DEFAULT PRIVILEGES FOR ROLE __MIGRATION_ROLE__ IN SCHEMA auth
+  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO __DB_APP_USER__;
+
+ALTER DEFAULT PRIVILEGES FOR ROLE __MIGRATION_ROLE__ IN SCHEMA public
+  GRANT USAGE, SELECT ON SEQUENCES TO __DB_APP_USER__;
+ALTER DEFAULT PRIVILEGES FOR ROLE __MIGRATION_ROLE__ IN SCHEMA auth
+  GRANT USAGE, SELECT ON SEQUENCES TO __DB_APP_USER__;

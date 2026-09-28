@@ -1,5 +1,10 @@
 # GCP + Firebase Deployment Runbook
 
+For provisioning a new tenant, see `deploy/README.md` — a semi-automated
+Terraform + script package built from this runbook that covers most of the
+steps below; this document remains the reference for what each step does and
+its gotchas.
+
 Reference for redeploying Neurix Enterprise to a new GCP project. Written from
 the actual commands used to stand up `neurix-enterprise`, including the
 gotchas hit along the way. Replace project/region/instance names as needed

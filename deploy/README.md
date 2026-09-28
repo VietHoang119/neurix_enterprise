@@ -9,19 +9,38 @@ install an app into a workspace.
 
 ## Hard safety rule
 
-**Nothing in this package may ever run against `neurix-enterprise`.** That
-project was created by hand, has no Terraform state, and holds real tenant
-data — pointing Terraform at it would try to create duplicate resources or
-manage things it knows nothing about.
+**`terraform/platform` may never run against `neurix-enterprise`, under any
+mode, with no override.** That project's platform-level resources (Cloud SQL
+instance, Artifact Registry, shared bucket, enabled APIs, Firebase project
+link) were created by hand, have no Terraform state, and the instance holds
+real tenant data — pointing `platform/` at it would try to create duplicate
+resources or manage things it knows nothing about.
 
-- `project_id` is a required Terraform variable with no default, and every
-  module (`terraform/platform`, `terraform/tenant`) has a `validation` block
-  that refuses `project_id = "neurix-enterprise"` with a clear error.
-- Every script (`provision.sh`, `destroy.sh`, `smoke_test.sh`) calls
-  `guard_not_production` (in `scripts/lib.sh`) before doing anything else,
-  which independently refuses the same project id.
-- This package is meant to be tested against a **brand-new, empty GCP
-  project** you create yourself for that purpose.
+- `terraform/platform/variables.tf`'s `project_id` variable has a
+  `validation` block that refuses `project_id = "neurix-enterprise"` with a
+  clear error, unconditionally — there is no variable or flag that changes
+  this.
+- Every script's platform-touching code path (`provision.sh platform`,
+  `provision.sh all`, `destroy.sh platform`, `destroy.sh all`,
+  `smoke_test.sh bucket-isolation`) calls `guard_not_production` (in
+  `scripts/lib.sh`) before doing anything else, which independently and
+  unconditionally refuses the same project id.
+- This package is primarily meant to be tested end-to-end (including
+  `platform/`) against a **brand-new, empty GCP project** you create
+  yourself for that purpose.
+
+**`terraform/tenant` has one narrow, explicitly opted-in exception**: it may
+run against `neurix-enterprise` to provision (or destroy) a single test
+tenant on top of the platform-level resources that already exist there by
+hand — never to create or modify those platform-level resources themselves.
+This is "external platform mode" — see "Testing a tenant on the existing
+production platform" below for the full opt-in gate, the read-only lookups
+needed, and what stays untested by this mode. The two guards above are
+unchanged for `platform/`; `tenant/`'s own guards (Terraform-side:
+`terraform/tenant/platform_source.tf`'s `production_project_guard`;
+shell-side: `scripts/lib.sh`'s `guard_tenant_production_opt_in`) are what
+grant this one exception, and only when every layer of that gate is
+satisfied.
 
 ## Layout
 
@@ -32,13 +51,18 @@ deploy/
 │   ├── versions.tf, backend.tf   # reference copies — see note below
 │   ├── platform/                 # once per GCP project
 │   ├── tenant/                   # once per tenant
-│   └── tenants/example.tfvars    # committed template; real *.tfvars are gitignored
+│   │   └── platform_source.tf    # remote_state OR external platform_mode — see below
+│   └── tenants/
+│       ├── example.tfvars        # committed template; real *.tfvars are gitignored
+│       └── test1.tfvars.example  # committed template for external/production mode
 ├── scripts/
-│   ├── lib.sh                    # guard, logging, secret-input helpers
-│   ├── provision.sh              # the 5 phases below, each callable alone
-│   ├── destroy.sh                # tenant / platform / all teardown
-│   ├── smoke_test.sh             # post-deploy checks (+ bucket isolation test)
-│   ├── grant_tenant.py           # DB grants (see "Grants" below)
+│   ├── lib.sh                        # guard, logging, secret-input helpers
+│   ├── provision.sh                  # the 5 phases below, each callable alone
+│   ├── destroy.sh                    # tenant / platform / all teardown
+│   ├── smoke_test.sh                 # post-deploy checks (+ bucket isolation test)
+│   ├── grant_tenant.py               # DB grants (see "Grants" below)
+│   ├── check_create_only_plan.py     # Terraform safety net (see below)
+│   ├── check_tenant_scoped_state.py  # destroy.sh external-mode safety net (see below)
 │   └── sql/grant_app_user.sql.tmpl
 ├── slack/slack-manifest.yml      # app manifest TEMPLATE, not auto-applied
 └── .gitignore                    # state, real tfvars, anything secret-shaped
@@ -68,7 +92,11 @@ versions or the backend type, change all three copies together.
 - Copy `terraform/tenants/example.tfvars` to `terraform/tenants/<tenant_id>.tfvars`
   and fill in `project_id`, `state_bucket`, `tenant_id` (never commit the copy
   — `.gitignore` already excludes every `terraform/tenants/*.tfvars` except
-  the example).
+  the two committed `*.tfvars.example` files).
+
+(To instead provision a tenant against the existing production platform, see
+"Testing a tenant on the existing production platform" below — it has its
+own prerequisites, state bucket, and tfvars template.)
 
 ## The 5 phases
 
@@ -102,14 +130,20 @@ provider in Firebase Auth (no reliable CLI/Terraform path — both `app` and
   Terraform's. Terraform only creates the empty database and the DB user/
   role via the Cloud SQL Admin API.
 - **No Slack/Gemini secret values in `.tfvars` or Terraform state.**
-  `terraform/tenant/main.tf` creates `slack-bot-token-<tenant>`,
-  `slack-signing-secret-<tenant>`, and `gemini-api-key-<tenant>` as empty
-  Secret Manager shells (no `google_secret_manager_secret_version` at all).
-  Values are added later by `scripts/provision.sh`'s `slack-secrets` phase
-  directly via `gcloud secrets versions add`, using `printf '%s'` piped to
-  `--data-file=-` — **never** `echo` or a here-string, because either one
-  appends a trailing newline that silently breaks the Slack signing-secret
-  HMAC check (this happened before in the manual deployment).
+  `terraform/tenant/main.tf` creates `slack-bot-token-<tenant>` and
+  `slack-signing-secret-<tenant>` as empty Secret Manager shells (no
+  `google_secret_manager_secret_version` at all). Values are added later by
+  `scripts/provision.sh`'s `slack-secrets` phase directly via `gcloud
+  secrets versions add`, using `printf '%s'` piped to `--data-file=-` —
+  **never** `echo` or a here-string, because either one appends a trailing
+  newline that silently breaks the Slack signing-secret HMAC check (this
+  happened before in the manual deployment).
+  `gemini-api-key-<tenant>` follows the same empty-shell pattern **only in
+  the normal (`platform_mode = "remote_state"`) flow**; in external platform
+  mode no Gemini secret is created at all — this tenant's runtime service
+  account is instead granted read access to an **existing** secret named by
+  `external_gemini_api_key_secret_id` (see "Testing a tenant on the existing
+  production platform").
   The one exception is `db-password-<tenant>`: its value is a Terraform
   `random_password`, so it necessarily exists in Terraform state — there's
   no way to generate it outside Terraform and still have Terraform own the
@@ -245,6 +279,262 @@ its own `apply` (Terraform refuses to destroy a `google_sql_database_instance`
 while that's `true`, which is the default — on purpose, so a stray `apply`
 can never silently drop the database), then destroys.
 
+## Testing a tenant on the existing production platform
+
+This mode provisions (or destroys) **one test tenant** on top of the
+platform-level resources (`neurix-enterprise-db`, the shared bucket, the
+Artifact Registry repo, the Firebase project) that already exist by hand in
+`neurix-enterprise` — without ever running `terraform/platform` against that
+project, and without letting Terraform touch, update, or delete anything
+that's already there. It exists to test this package's `tenant/` flow for
+real, on the actual Standard-tier design (one shared Cloud SQL instance, one
+database per tenant), without paying for a second instance.
+
+**Production holds real data. Read this whole section, and do the pre-flight
+checklist, before running anything.**
+
+### 1. External platform mode — the design
+
+`terraform/tenant` supports two ways of learning its shared platform stack's
+identifiers, chosen by the `platform_mode` variable (default
+`"remote_state"`):
+
+- **`"remote_state"`** (the normal flow, unchanged): reads every platform
+  output via `terraform_remote_state`. Requires `platform/` to have already
+  been applied to the same project.
+- **`"external"`**: accepts the same facts as plain `external_*` variables
+  instead, and never reads any platform Terraform state. This is what makes
+  running `tenant/` against `neurix-enterprise` possible at all — production
+  has no Terraform state for its platform-level resources to read.
+
+This was the cleanest option available (versus, say, a second `tenant/`
+module or hand-editing `terraform_remote_state`'s backend config per run):
+one variable toggles a `count`-gated data source and a couple of `locals`
+blocks (`terraform/tenant/platform_source.tf`) — every other resource in the
+module is unaware of which mode is active, since it only ever reads
+`local.platform.*`.
+
+In external mode, `platform_source.tf`'s `terraform_data.external_mode_guard`
+fails `plan`/`apply` up front, by name, if a required `external_*` input was
+left unset. The Gemini API key is handled differently in this mode: instead
+of creating a new `gemini-api-key-<tenant>` secret (as `remote_state` mode
+does), the tenant's runtime service account is only granted
+`roles/secretmanager.secretAccessor` on the **existing** secret named by
+`external_gemini_api_key_secret_id` — no new secret, no new version, ever
+written by this module in external mode.
+
+### 2. Read-only lookups — collect every input value first
+
+None of these values are guessed or assumed anywhere in this package. Run
+these against `neurix-enterprise` (read-only; none of them change anything)
+and copy the results into your tenant's `.tfvars`:
+
+```bash
+# Cloud SQL instance name + connection name
+gcloud sql instances describe neurix-enterprise-db --project=neurix-enterprise \
+  --format='value(name,connectionName)'
+
+# Artifact Registry repository (region-docker.pkg.dev/PROJECT/REPO)
+gcloud artifacts repositories list --project=neurix-enterprise --location=asia-southeast1
+
+# Shared raw-files bucket
+gcloud storage buckets list --project=neurix-enterprise --format='value(name)'
+
+# Existing Gemini API key secret name
+gcloud secrets list --project=neurix-enterprise --format='value(name)' | grep -i gemini
+
+# Firebase project id (normally == the GCP project id)
+gcloud firebase projects list --format='value(projectId)' | grep neurix-enterprise
+
+# Optional: an existing Cloud Build service account to reuse
+gcloud iam service-accounts list --project=neurix-enterprise --format='value(email)' | grep -i cloudbuild
+```
+
+### 3. Set up the test tenant's tfvars
+
+```bash
+cp terraform/tenants/test1.tfvars.example terraform/tenants/test1.tfvars
+# fill in state_bucket and every external_* value from step 2 above —
+# never commit this file (deploy/.gitignore already excludes it)
+```
+
+`terraform/tenants/test1.tfvars.example` is committed with conservative
+resource limits for a test tenant sharing production's `db-g1-small`
+instance: `cloud_run_max_instances = 1`, `cloud_run_min_instances = 0`,
+`db_pool_size = 2`, `db_max_overflow = 3` (vs. the normal-flow defaults of
+3/0/5/10) — this is a test, not a tenant that needs to scale.
+
+### 4. State bucket bootstrap
+
+A **separate** state bucket from any normal-flow test project's bucket is
+recommended, so this mode's state can never be confused with another
+project's. Terraform cannot create the bucket it's about to store its own
+state in, so create it by hand once, with versioning on (so a bad state
+write is recoverable) and uniform bucket-level access:
+
+```bash
+gcloud storage buckets create gs://YOUR_PROD_TEST_TF_STATE_BUCKET \
+  --project=YOUR_OWN_PROJECT_FOR_THIS_BUCKET \
+  --location=asia-southeast1 \
+  --uniform-bucket-level-access
+gcloud storage buckets update gs://YOUR_PROD_TEST_TF_STATE_BUCKET --versioning
+```
+
+This bucket does not itself need to live in `neurix-enterprise` — any
+project you control that Terraform can write to works, since the bucket
+only holds this tenant's own `tenants/neurix-enterprise/test1/...` state
+prefix, never platform-level state (there is none to hold).
+
+### 5. Opt-in steps
+
+Every tenant-only script step (`provision.sh` phases other than `platform`/
+`all`; `destroy.sh tenant`; `smoke_test.sh`'s default mode) requires **all**
+of the following when `--project-id neurix-enterprise`:
+
+1. `platform_mode = "external"` in the tenant's `.tfvars` (step 3 above).
+2. `NEURIX_ALLOW_PRODUCTION_PROJECT=yes` set in your shell:
+   ```bash
+   export NEURIX_ALLOW_PRODUCTION_PROJECT=yes
+   ```
+3. `tenant_id` matching `^[a-z0-9-]{3,20}$` and not on the denylist
+   (`neurix`, `neurix-demo-team`, `default`, `prod`, `production`, `main`) —
+   `validate_tenant_id_strict` in `scripts/lib.sh`.
+4. Typing the tenant id back at an interactive prompt, after a loud banner
+   naming the project, the tenant, and that this is production.
+
+`platform` and `all` remain unconditionally refused for
+`neurix-enterprise` — always run the individual tenant-only phases:
+
+```bash
+scripts/provision.sh tenant-resources --project-id neurix-enterprise --tenant-id test1 --state-bucket YOUR_PROD_TEST_TF_STATE_BUCKET
+scripts/provision.sh migrate           --project-id neurix-enterprise --tenant-id test1 --state-bucket YOUR_PROD_TEST_TF_STATE_BUCKET
+scripts/provision.sh slack-secrets     --project-id neurix-enterprise --tenant-id test1 --state-bucket YOUR_PROD_TEST_TF_STATE_BUCKET
+scripts/provision.sh app               --project-id neurix-enterprise --tenant-id test1 --state-bucket YOUR_PROD_TEST_TF_STATE_BUCKET
+scripts/provision.sh frontend          --project-id neurix-enterprise --tenant-id test1 --state-bucket YOUR_PROD_TEST_TF_STATE_BUCKET
+```
+
+The `migrate` phase prompts interactively for the Cloud SQL `postgres` user's
+password — there is no known Secret Manager secret holding production's
+admin password for this package to read, and guessing a name for a
+production credential is exactly the kind of mistake this mode exists to
+avoid.
+
+### 6. Pre-flight checklist
+
+- [ ] Read this entire section.
+- [ ] **Take a fresh manual Cloud SQL backup of `neurix-enterprise-db`
+      first**: `gcloud sql backups create --instance=neurix-enterprise-db --project=neurix-enterprise`.
+      This is the actual safety net if anything goes wrong — everything
+      else in this package is defense-in-depth on top of it.
+- [ ] Ran every read-only lookup in step 2 and filled in
+      `terraform/tenants/test1.tfvars` (never commit it).
+- [ ] Picked a `tenant_id` that passes the strict pattern and isn't on the
+      denylist, and isn't a real tenant you'd ever want to keep.
+- [ ] `NEURIX_ALLOW_PRODUCTION_PROJECT=yes` is set in the shell you'll run
+      these commands from.
+- [ ] Comfortable typing the tenant id back at each production confirmation
+      prompt — there are several (the top-level opt-in gate, each SQL step
+      in `migrate`, and `destroy.sh tenant`).
+- [ ] Ready to run `scripts/destroy.sh tenant --project-id neurix-enterprise
+      --tenant-id test1 ...` when done testing (see step 7 below) — this
+      test tenant should not be left running against production
+      indefinitely.
+
+### 7. Terraform safety net: create-only
+
+Because `platform/` was never applied for this project, the very first
+`terraform apply` in this mode runs against a state that already has
+*something* in it (production's hand-created resources aren't in Terraform
+state, but the tenant module still needs its first apply to be provably
+safe). `scripts/provision.sh`'s `tf_tenant_apply` helper enforces this: it
+runs `terraform plan -out=tfplan`, then `terraform show -json tfplan |
+check_create_only_plan.py`, which **fails the run** if any
+`resource_change` has actions other than `create` (or `no-op`/`read`) — only
+then does it `terraform apply` that exact saved plan. An update, replace, or
+delete of anything already there stops the run before `apply` ever runs.
+This only activates when `platform_mode = "external"`; the normal flow's
+`terraform apply` is unchanged (a redeploy legitimately needs `update`
+actions, e.g. a new `backend_image`).
+
+Tested with hand-made plan JSON (no cloud credentials needed):
+`check_create_only_plan.py` accepts a plan containing only
+`create`/`no-op`/`read` actions, and refuses one containing an `update`
+action or a `replace` (`["delete", "create"]`) — see "Verification" below.
+
+**IAM in `tenant/` — audited, none authoritative.** Every IAM resource this
+module creates is listed here, and every one is a non-authoritative
+`*_iam_member` resource (adds one binding without touching any other
+existing binding on the same resource) — never `*_iam_binding` or
+`*_iam_policy` (both of those are authoritative: they replace the *entire*
+set of bindings for a role or the *entire* policy, which on a shared
+resource like the production bucket, an existing secret, or the project
+itself could silently drop bindings this package knows nothing about,
+including ones that keep production itself working):
+
+| Resource | Type | Scope |
+|---|---|---|
+| `db_password_accessor` | `google_secret_manager_secret_iam_member` | this tenant's own secret |
+| `slack_bot_token_accessor` | `google_secret_manager_secret_iam_member` | this tenant's own secret |
+| `slack_signing_secret_accessor` | `google_secret_manager_secret_iam_member` | this tenant's own secret |
+| `gemini_api_key_accessor` | `google_secret_manager_secret_iam_member` | **existing, shared** secret (external mode) or this tenant's own (remote_state mode) |
+| `run_sql_client` | `google_project_iam_member` | the project (grants `roles/cloudsql.client` to this tenant's own SA only) |
+| `run_token_creator_self` | `google_service_account_iam_member` | this tenant's own service account |
+| `dedicated_object_admin` | `google_storage_bucket_iam_member` | this tenant's own dedicated bucket (`dedicated_bucket = true` only) |
+| `shared_object_admin_scoped_to_prefix` | `google_storage_bucket_iam_member` | **existing, shared** bucket, condition-scoped to this tenant's own `<tenant>/` prefix |
+| `public_invoker` | `google_cloud_run_v2_service_iam_member` | this tenant's own Cloud Run service |
+
+The two resources marked "existing, shared" (`gemini_api_key_accessor` in
+external mode, and `shared_object_admin_scoped_to_prefix` whenever
+`dedicated_bucket = false`) are the only ones that touch a resource this
+package doesn't itself create — both are still `*_iam_member`, so they only
+ever *add* this tenant's own binding, never remove or replace any other
+tenant's or production's own bindings on that same secret/bucket.
+
+### 8. Destroying the test tenant
+
+```bash
+export NEURIX_ALLOW_PRODUCTION_PROJECT=yes
+scripts/destroy.sh tenant --project-id neurix-enterprise --tenant-id test1 --state-bucket YOUR_PROD_TEST_TF_STATE_BUCKET
+```
+
+In external mode this is scoped to **only** this tenant's own Terraform
+state (`tenants/neurix-enterprise/test1` in the state bucket) — the shared
+production platform (Cloud SQL instance, Artifact Registry, shared bucket)
+is never touched, because it was never in that state to begin with.
+`destroy.sh` prints every resource address in the tenant's state, then
+refuses (via `check_tenant_scoped_state.py`) unless every resource address
+is one `terraform/tenant` can actually produce **and** the state's own
+`tenant_id` output matches `--tenant-id` — catching a
+`--tenant-id`/`--tfvars`/`--state-bucket` mismatch before `terraform
+destroy` ever runs. It then requires typing the tenant id back once more.
+**This destroys the tenant's database (`neurix_test1`) and all data in
+it — permanently, with no undo** — `destroy.sh` says so explicitly before
+running.
+
+### What this mode does NOT test
+
+- **`terraform/platform` itself** — instance creation, API enablement,
+  Artifact Registry repository creation, the shared bucket, the Cloud Build
+  service account, the Firebase project link. None of that runs in this
+  mode; it stays genuinely untested by this package until `platform/` is
+  applied for real on a throwaway project (the normal flow).
+- **Firebase Auth authorized domains** for a brand-new Hosting site
+  (`test1-neurix.web.app`) created under the same, already-in-use Firebase
+  project. Firebase Auth restricts sign-in by authorized domain; whether a
+  new Hosting site's domain needs to be added by hand to the existing
+  project's authorized-domains list (Firebase Console → Authentication →
+  Settings → Authorized domains) before sign-in works for this test tenant
+  is unverified here — check that console page if sign-in fails after the
+  `frontend` phase.
+- **The shared-bucket IAM-condition signed-URL isolation** — already listed
+  under "Known unknowns" below as unverified in general; it applies
+  identically here (`dedicated_bucket = false`, the default, uses the
+  **existing production bucket** via `external_shared_raw_bucket_name`).
+  Prefer `dedicated_bucket = true` for this test tenant if isolation from
+  production's own raw files actually matters for what's being tested — it
+  creates a small dedicated `neurix-raw-test1` bucket instead of scoping
+  into the shared one.
+
 ## Verification: what was actually run vs. only written
 
 Real GCP credentials were not available in the environment this package was
@@ -277,11 +567,75 @@ were possible. What *was* run for real:
   verification.
 - `python3 -m py_compile` on `grant_tenant.py`.
 
+**External platform mode, added in this pass — additionally verified for
+real** (still without real GCP credentials):
+
+- `terraform plan` for `tenant/` with `platform_mode = "external"` and
+  `project_id = "neurix-enterprise"`, dummy `external_*` values, same local-
+  backend approach as above: the plan fully resolved (`random_password.
+  db_user`, `terraform_data.external_mode_guard`,
+  `terraform_data.production_project_guard`, every output including the
+  Gemini secret passthrough) and failed cleanly at provider authentication —
+  confirming the whole conditional graph (both guard resources' `precondition`
+  blocks passing, `local.platform` resolving from variables instead of
+  `terraform_remote_state`) actually works, not just parses.
+- The same plan **negative-tested**: `project_id = "neurix-enterprise"` with
+  `platform_mode` left at its default (`"remote_state"`) correctly fails
+  `terraform_data.production_project_guard`'s precondition with the intended
+  error message, before ever reaching provider auth. `platform_mode =
+  "external"` with every `external_*` value left unset correctly fails
+  `terraform_data.external_mode_guard`'s precondition, naming every missing
+  variable. A normal-flow plan (`remote_state` mode, non-production
+  `project_id`) was re-run after these changes and still fails at exactly
+  the same point as before (no default credentials) — confirming the new
+  guards don't affect the existing flow.
+- `check_create_only_plan.py` run against three hand-made plan JSON files
+  (no cloud credentials needed): a plan with only `create`/`no-op`/`read`
+  actions passes; a plan containing an `update` action fails, naming the
+  resource; a plan containing a `replace` (`["delete", "create"]`) and a
+  bare `delete` fails, naming both resources. Both the file-argument and
+  stdin invocation forms were tested.
+- `check_tenant_scoped_state.py` run against three hand-made state JSON
+  files: a state whose resources are all known tenant-module types and
+  whose `tenant_id` output matches passes; a state containing an
+  unrecognized resource type fails, naming it; a state whose `tenant_id`
+  output doesn't match the given tenant id fails, naming both values.
+- `scripts/provision.sh` and `scripts/destroy.sh` run for real (a real
+  Terraform binary and a stub `gcloud` satisfying `require_cmd`, no real GCP
+  calls reached) against every guard branch: `platform`/`all` against
+  `neurix-enterprise` refuse immediately with no prompt; a tenant-only phase
+  against `neurix-enterprise` with `platform_mode` still `"remote_state"`
+  refuses naming exactly that; the same with external mode set but
+  `NEURIX_ALLOW_PRODUCTION_PROJECT` unset refuses naming exactly that; the
+  same with a denylisted `tenant_id` (`prod`) refuses naming the denylist;
+  the same with everything set and the tenant id typed correctly at the
+  confirmation prompt passes through to a real `terraform init` (which then
+  fails at "no default credentials", the expected next failure); the same
+  with the tenant id mistyped at the prompt aborts before any `terraform`
+  call. The existing normal flow (non-production `project_id`) was
+  re-run after these changes and reaches `terraform init` with no guard
+  prompts at all, exactly as before.
+- `grant_tenant.py`'s new `guard_sql_target` function, unit-tested in
+  isolation (imported directly, `input()` monkeypatched, no real DB
+  connection): a correct tenant database name on a non-production project
+  passes silently; `db_name = "neurix"` and `db_name = "postgres"` both
+  refuse, naming the mismatch; on the production project, a correct database
+  name with `"yes"` typed at the confirmation passes, and with anything else
+  typed refuses.
+- `python3 -m py_compile` on `check_create_only_plan.py` and
+  `check_tenant_scoped_state.py`, alongside `grant_tenant.py`.
+
 What was **written but not run against real infrastructure**: every
-`terraform apply`/`destroy` against actual GCP resources, `gcloud builds
-submit`, the Slack app creation/install flow, the frontend build+Hosting
-deploy, and `smoke_test.sh`'s HTTP checks. Hoàng will do the real end-to-end
-test on a fresh GCP project.
+`terraform apply`/`destroy` against actual GCP resources (both the normal
+flow and external platform mode), `gcloud builds submit`, the Slack app
+creation/install flow, the frontend build+Hosting deploy, and
+`smoke_test.sh`'s HTTP checks. This also means the *substance* of the
+production-testing pre-flight checklist (a real Cloud SQL backup, the real
+read-only lookups against `neurix-enterprise`) was written and reasoned
+through but not physically executed here — Hoàng will do the real
+end-to-end test, on a fresh GCP project first and then, following this
+README's "Testing a tenant on the existing production platform" section,
+against `neurix-enterprise` itself.
 
 ## Judgment calls made
 
@@ -314,6 +668,64 @@ test on a fresh GCP project.
 - **`tenant_id` length cap (15 chars)**: not stated in the handoff; derived
   from the 30-character GCP service-account `account_id` limit combined with
   the `neurix-<tenant>-run` naming convention.
+- **`platform_mode` design**: a two-value variable (`"remote_state"` /
+  `"external"`) gating a `count`-conditional `terraform_remote_state` data
+  source plus one `locals` block, over alternatives like a second copy of
+  `tenant/` or a wrapper module — chosen because every other resource in
+  the module stays unaware of which mode is active (it only ever reads
+  `local.platform.*`), so the diff against the normal flow is small and
+  auditable, and nothing about the normal flow's behavior changes.
+- **Production `project_id` validation moved out of the Terraform variable
+  block**: `tenant/variables.tf`'s `project_id` variable used to hard-refuse
+  `"neurix-enterprise"` in its own `validation` block (unconditionally, no
+  way to allow it). That block can't reference `var.platform_mode` safely
+  across Terraform versions (cross-variable validation needs >= 1.9, and
+  this package targets `>= 1.6.0`), so the conditional guard was moved into
+  a resource `precondition`
+  (`terraform_data.production_project_guard`), which has always supported
+  referencing other variables. `platform/variables.tf`'s equivalent
+  validation was deliberately left untouched — it has no carve-out to make.
+- **No Terraform variable for the Cloud SQL root/admin password in external
+  mode**: the handoff's external-mode input list doesn't include one, and no
+  secret is known to hold production's admin password under a predictable
+  name. Rather than guess a secret name for a production credential,
+  `scripts/provision.sh`'s `migrate` phase prompts for it interactively
+  (hidden input) in external mode instead of reading Secret Manager.
+- **Cloud Build service account is optional in external mode**
+  (`external_cloudbuild_service_account_email`, default `""`): production
+  already has a working build/deploy flow for `neurix-backend` under some
+  service account, but the handoff didn't name it and guessing would risk
+  granting/assuming permissions incorrectly. Left empty, `gcloud builds
+  submit` in `provision.sh`'s `migrate` phase omits `--service-account` and
+  falls back to the project's default Cloud Build service account.
+- **Gemini secret: grant access to an existing secret, never create one, in
+  external mode** — the handoff's phrasing ("name of the existing Gemini API
+  key secret to be granted to the new service account") reads as reusing a
+  secret that already holds a real key, not creating an empty tenant-specific
+  shell the way the normal flow does. `terraform/tenant/main.tf` only
+  creates `google_secret_manager_secret.gemini_api_key` when `platform_mode
+  = "remote_state"`; in external mode it grants
+  `roles/secretmanager.secretAccessor` on `external_gemini_api_key_secret_id`
+  instead, and `scripts/provision.sh`'s `slack-secrets` phase skips the
+  Gemini prompt entirely in that mode (there is no per-tenant secret to
+  write a value into).
+- **Production `tenant_id` strict pattern (3-20 chars, `[a-z0-9-]`) is layered
+  on top of, not instead of, Terraform's own `tenant_id` validation (2-15
+  chars, must start with a letter)** — the handoff specified the former
+  exactly for the shell-level opt-in gate; the latter still applies at
+  `terraform plan`/`apply` time regardless (it's driven by the 30-character
+  GCP service-account limit, unrelated to production-specific risk), so the
+  two together are effectively the intersection: 3-15 chars, start with a
+  letter, not on the denylist.
+- **`smoke_test.sh`'s default mode was extended to allow the same
+  production opt-in gate** (not explicitly requested in the handoff, which
+  only names `provision.sh`/`destroy.sh`): it's read-only and purely
+  tenant-scoped (its own state, its own Cloud Run/Hosting URLs), so refusing
+  it for production seemed like an unnecessary gap given the whole point of
+  this mode is testing a real tenant. `bucket-isolation` mode was
+  deliberately left hard-refused — it spans two tenants and reaches into
+  the platform's *shared* bucket directly via service-account impersonation,
+  which is a materially different risk profile.
 
 ## Open questions for Hoàng
 
@@ -329,3 +741,17 @@ test on a fresh GCP project.
    but worth a second look if builds ever need to *pull* a base image from
    the same private repo (they don't today — the Dockerfile's base image is
    public `python:3.12-slim`).
+4. Whether production already has a Secret Manager secret holding the Cloud
+   SQL admin/root password under some name — if so, `scripts/provision.sh`'s
+   `migrate` phase could read it via `gcloud secrets versions access`
+   instead of prompting interactively every time. Left as an interactive
+   prompt for now (see "Judgment calls made") since no such secret name was
+   given and guessing one for a production credential seemed like the wrong
+   default.
+5. Whether there's an existing Cloud Build service account already used to
+   build/deploy `neurix-backend` that should be passed as
+   `external_cloudbuild_service_account_email`, rather than falling back to
+   the project's default Cloud Build service account.
+6. Firebase Auth authorized domains for a new Hosting site under the
+   existing, already-in-use Firebase project — see "Testing a tenant on the
+   existing production platform" → "What this mode does NOT test".

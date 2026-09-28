@@ -98,6 +98,14 @@ resource "google_cloud_run_v2_service" "backend" {
         name  = "GEMINI_MODEL_FALLBACKS"
         value = var.gemini_model_fallbacks
       }
+      env {
+        name  = "DB_POOL_SIZE"
+        value = tostring(var.db_pool_size)
+      }
+      env {
+        name  = "DB_MAX_OVERFLOW"
+        value = tostring(var.db_max_overflow)
+      }
 
       env {
         name = "DB_PASSWORD"
@@ -130,7 +138,7 @@ resource "google_cloud_run_v2_service" "backend" {
         name = "GOOGLE_API_KEY"
         value_source {
           secret_key_ref {
-            secret  = google_secret_manager_secret.gemini_api_key.secret_id
+            secret  = local.gemini_api_key_secret_id
             version = "latest"
           }
         }

@@ -7,9 +7,14 @@
 crash.log
 crash.*.log
 
-# Real tenant configuration. Only terraform/tenants/example.tfvars is
-# committed; every other *.tfvars in this tree contains a real project_id /
-# tenant_id and must never be committed.
+# Real tenant configuration. Only the committed *.tfvars.example templates
+# (terraform/tenants/example.tfvars, terraform/tenants/test1.tfvars.example)
+# are tracked; every real terraform/tenants/*.tfvars file (note: no
+# ".example" suffix) contains a real project_id/tenant_id — or, for the
+# production-testing template, external_* production values — and must
+# never be committed. *.tfvars.example is untouched by the pattern below
+# (it doesn't end in exactly ".tfvars"), so no explicit exception is needed
+# for it.
 terraform/tenants/*.tfvars
 !terraform/tenants/example.tfvars
 

@@ -7,10 +7,22 @@
 # does the same so it is also safe if ever run stand-alone.
 set -euo pipefail
 
-# The one project this package must never touch. Created by hand, no
-# Terraform state, real tenant data — see deploy/README.md "Hard safety
-# rule". Every script calls guard_not_production before doing anything else.
+# The one project this package must never touch by default. Created by
+# hand, no Terraform state for its platform-level resources, real tenant
+# data — see deploy/README.md "Hard safety rule". platform/ and any
+# platform-touching script step call guard_not_production, which has no
+# override of any kind. tenant/-only operations may instead go through the
+# layered opt-in gate in guard_tenant_production_opt_in — see
+# deploy/README.md "Testing a tenant on the existing production platform".
 readonly NEURIX_PRODUCTION_PROJECT_ID="neurix-enterprise"
+
+# tenant_id values that must never be used for a tenant provisioned against
+# the production project, even with the opt-in env var set — each one is
+# either the production project's own defacto name, a demo/example id likely
+# to already exist or be reused by habit, or a generic word ("default",
+# "prod", "production", "main") someone could type without thinking. This is
+# on top of, not instead of, validate_tenant_id_strict's pattern check.
+readonly NEURIX_PRODUCTION_TENANT_ID_DENYLIST=(neurix neurix-demo-team default prod production main)
 
 log_info()  { printf '[INFO]  %s\n' "$*" >&2; }
 log_warn()  { printf '[WARN]  %s\n' "$*" >&2; }
@@ -78,6 +90,154 @@ confirm() {
   local answer
   read -r -p "$prompt [type 'yes' to continue] " answer
   [[ "$answer" == "yes" ]]
+}
+
+# validate_tenant_id_strict <tenant_id>
+#
+# Stricter pattern used specifically by guard_tenant_production_opt_in, on
+# top of (never instead of) validate_tenant_id and Terraform's own
+# tenant_id variable validation (both still apply and are in practice
+# narrower: lowercase, must start with a letter, 2-15 characters, vs. this
+# function's lowercase+digits+hyphen, 3-20 characters). Kept as a separate,
+# explicitly named check because the production handoff specified this
+# exact shape for the production-project opt-in gate.
+validate_tenant_id_strict() {
+  local tenant_id="${1:-}"
+  if [[ ! "$tenant_id" =~ ^[a-z0-9-]{3,20}$ ]]; then
+    log_error "Invalid tenant_id for production-project mode: '$tenant_id'"
+    log_error "Must be lowercase letters, digits, and hyphens only; 3-20 characters."
+    exit 1
+  fi
+  local denied
+  for denied in "${NEURIX_PRODUCTION_TENANT_ID_DENYLIST[@]}"; do
+    if [[ "$tenant_id" == "$denied" ]]; then
+      log_error "tenant_id '$tenant_id' is on the production denylist (reserved/ambiguous id) and cannot be used against the production project."
+      exit 1
+    fi
+  done
+}
+
+# guard_tenant_production_opt_in <project_id> <tenant_id> <platform_mode>
+#
+# Layered gate for running a *tenant-only* operation (never platform/, never
+# `provision.sh all`, never `destroy.sh platform`/`all`) against the
+# production project. A no-op (returns 0 immediately) for any other
+# project_id — this is deliberately NOT guard_not_production; it exists
+# precisely to allow the one narrow case guard_not_production forbids
+# outright. All of the following must hold, checked in this order, any
+# failure exits non-zero without side effects:
+#
+#   1. platform_mode == "external" — remote_state mode assumes a
+#      Terraform-managed platform stack, which production does not have.
+#   2. NEURIX_ALLOW_PRODUCTION_PROJECT=yes is set in the environment — an
+#      explicit, deliberate opt-in that can't be fat-fingered via a CLI flag
+#      default.
+#   3. tenant_id passes validate_tenant_id_strict (pattern + denylist).
+#   4. The operator retypes tenant_id at an interactive prompt, after a loud
+#      banner naming the project, and that this is production.
+#
+# Mirrored by terraform/tenant/platform_source.tf's
+# production_project_guard precondition for the case someone runs
+# `terraform apply` directly, bypassing this script entirely.
+guard_tenant_production_opt_in() {
+  local project_id="$1" tenant_id="$2" platform_mode="$3"
+
+  if [[ "$project_id" != "$NEURIX_PRODUCTION_PROJECT_ID" ]]; then
+    return 0
+  fi
+
+  log_warn "=================================================================="
+  log_warn " PRODUCTION PROJECT: $NEURIX_PRODUCTION_PROJECT_ID"
+  log_warn " A tenant-only operation was requested against the production"
+  log_warn " project. This is only ever allowed in external platform mode,"
+  log_warn " with an explicit opt-in. See deploy/README.md \"Testing a"
+  log_warn " tenant on the existing production platform\"."
+  log_warn "=================================================================="
+
+  if [[ "$platform_mode" != "external" ]]; then
+    log_error "Refusing: tenant/ operations against '$NEURIX_PRODUCTION_PROJECT_ID' require platform_mode = \"external\" (set in the tenant's .tfvars file)."
+    log_error "remote_state mode assumes a Terraform-managed platform stack, which does not exist for production."
+    exit 1
+  fi
+
+  if [[ "${NEURIX_ALLOW_PRODUCTION_PROJECT:-}" != "yes" ]]; then
+    log_error "Refusing: set NEURIX_ALLOW_PRODUCTION_PROJECT=yes to enable tenant operations against the production project."
+    exit 1
+  fi
+
+  if [[ -z "$tenant_id" ]]; then
+    log_error "Refusing: no tenant_id given for a tenant operation against the production project."
+    exit 1
+  fi
+  validate_tenant_id_strict "$tenant_id"
+
+  log_warn "About to run a TENANT-ONLY operation against the PRODUCTION project."
+  log_warn "  project:       $project_id"
+  log_warn "  tenant_id:     $tenant_id"
+  log_warn "  platform_mode: external"
+  log_warn "This will create new, tenant-suffixed resources on the shared production Cloud SQL instance."
+  local typed
+  read -r -p "Type the tenant id ('$tenant_id') to confirm: " typed
+  if [[ "$typed" != "$tenant_id" ]]; then
+    log_error "Typed value did not match tenant_id. Aborting."
+    exit 1
+  fi
+
+  log_warn "=================================================================="
+  log_warn " PRODUCTION MODE ACTIVE — proceeding for tenant '$tenant_id' on '$project_id'."
+  log_warn "=================================================================="
+}
+
+# guard_sql_target <project_id> <tenant_id> <instance> <db_name> <db_user>
+#
+# Defense-in-depth check run immediately before every SQL-touching step
+# (migrations, grants, any future probe) — this is what stands between a
+# bad --tenant-id/--tfvars mismatch and a GRANT or ALTER DEFAULT PRIVILEGES
+# landing on 'neurix', 'postgres', or any database that isn't this tenant's
+# own. Always prints instance/db/user before connecting, and requires an
+# interactive typed confirmation when project_id is the production project —
+# on top of, not instead of, the top-level guard_tenant_production_opt_in
+# gate already passed once before the phase that calls this started.
+guard_sql_target() {
+  local project_id="$1" tenant_id="$2" instance="$3" db_name="$4" db_user="$5"
+  local expected="neurix_${tenant_id}"
+
+  if [[ "$db_name" != "$expected" ]]; then
+    log_error "Refusing SQL step: target database '$db_name' does not match the expected tenant database '$expected'."
+    log_error "This guard exists specifically to stop a migration/grant from ever landing on 'neurix', 'postgres', or any database that isn't this tenant's own."
+    exit 1
+  fi
+
+  log_info "SQL target — instance: $instance | database: $db_name | user: $db_user"
+
+  if [[ "$project_id" == "$NEURIX_PRODUCTION_PROJECT_ID" ]]; then
+    log_warn "About to run a SQL step against the PRODUCTION project's Cloud SQL instance."
+    confirm "Type 'yes' to confirm this SQL step against '$db_name' on '$instance'" \
+      || { log_error "Aborted at SQL guard."; exit 1; }
+  fi
+}
+
+# read_tfvar_string <tfvars_file> <key> [default]
+#
+# Extracts a simple string-typed top-level key ("key = \"value\"") from a
+# .tfvars file via a plain regex — enough for the handful of scalar keys
+# provision.sh/destroy.sh need to read back (platform_mode) without adding a
+# full HCL parser. Comments and non-string types are not supported.
+read_tfvar_string() {
+  local file="$1" key="$2" default="${3:-}"
+  local line value
+  if [[ ! -f "$file" ]]; then
+    printf '%s' "$default"
+    return 0
+  fi
+  line="$(grep -E "^[[:space:]]*${key}[[:space:]]*=" "$file" 2>/dev/null | tail -n1 || true)"
+  if [[ -z "$line" ]]; then
+    printf '%s' "$default"
+    return 0
+  fi
+  value="${line#*=}"
+  value="$(printf '%s' "$value" | sed -E 's/^[[:space:]]*"?//; s/"?[[:space:]]*(#.*)?$//')"
+  printf '%s' "$value"
 }
 
 # read_secret <prompt> <out_var_name>

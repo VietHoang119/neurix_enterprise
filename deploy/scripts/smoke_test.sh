@@ -22,6 +22,11 @@
 # if it succeeds, the IAM condition is not actually isolating tenants and
 # dedicated_bucket = true should be used instead for any tenant that needs
 # real isolation.
+#
+# The default mode is allowed against the production project under the same
+# layered tenant-only opt-in gate as provision.sh/destroy.sh (it's
+# read-only and tenant-scoped). 'bucket-isolation' always hard-refuses
+# production, no override — see the guard dispatch below.
 
 set -euo pipefail
 
@@ -57,8 +62,24 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-guard_not_production "$PROJECT_ID"
 require_cmd curl gcloud terraform
+
+# Layered rule, same as provision.sh/destroy.sh: the default mode only ever
+# reads this tenant's own Terraform state and hits its own Cloud Run/Hosting
+# URLs — never modifies infrastructure (see this file's own header comment)
+# — so it's allowed against production under the same tenant-only opt-in
+# gate. 'bucket-isolation' spans two tenants and the platform's *shared*
+# bucket directly (via impersonation) and is judged higher-risk, so it stays
+# hard-refused for production with no override, same as platform/.
+if [[ "$MODE" == "bucket-isolation" ]]; then
+  guard_not_production "$PROJECT_ID"
+else
+  PLATFORM_MODE="remote_state"
+  if [[ -n "$TENANT_ID" ]]; then
+    PLATFORM_MODE="$(read_tfvar_string "$TF_DIR/tenants/${TENANT_ID}.tfvars" "platform_mode" "remote_state")"
+  fi
+  guard_tenant_production_opt_in "$PROJECT_ID" "$TENANT_ID" "$PLATFORM_MODE"
+fi
 
 [[ -n "$PROJECT_ID" ]] || { log_error "--project-id is required."; exit 1; }
 [[ -n "$STATE_BUCKET" ]] || { log_error "--state-bucket is required."; exit 1; }

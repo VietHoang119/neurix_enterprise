@@ -94,7 +94,14 @@ resource "google_secret_manager_secret" "slack_signing_secret" {
   }
 }
 
+# In external mode, no per-tenant Gemini secret is created at all — the
+# handoff supplies the id of an EXISTING Gemini API key secret
+# (external_gemini_api_key_secret_id) and this module only grants the
+# tenant's runtime SA read access to it (see gemini_api_key_accessor below
+# and local.gemini_api_key_secret_id in platform_source.tf's sibling local).
 resource "google_secret_manager_secret" "gemini_api_key" {
+  count = var.platform_mode == "remote_state" ? 1 : 0
+
   project   = var.project_id
   secret_id = "gemini-api-key-${var.tenant_id}"
 
@@ -107,6 +114,13 @@ resource "google_secret_manager_secret" "gemini_api_key" {
   lifecycle {
     ignore_changes = [labels]
   }
+}
+
+locals {
+  # remote_state mode: a fresh, tenant-owned secret this module creates.
+  # external mode: an existing secret this module never creates or writes
+  # to — only grants read access on, via gemini_api_key_accessor below.
+  gemini_api_key_secret_id = var.platform_mode == "remote_state" ? google_secret_manager_secret.gemini_api_key[0].secret_id : var.external_gemini_api_key_secret_id
 }
 
 # ---------------------------------------------------------------------------
@@ -142,7 +156,7 @@ resource "google_secret_manager_secret_iam_member" "slack_signing_secret_accesso
 
 resource "google_secret_manager_secret_iam_member" "gemini_api_key_accessor" {
   project   = var.project_id
-  secret_id = google_secret_manager_secret.gemini_api_key.secret_id
+  secret_id = local.gemini_api_key_secret_id
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.run.email}"
 }

@@ -13,5 +13,10 @@ resource "google_firebase_hosting_site" "tenant" {
   project = var.project_id
   site_id = "${var.tenant_id}-neurix"
 
-  depends_on = [data.terraform_remote_state.platform]
+  # data.terraform_remote_state.platform only exists (count=1) in the
+  # default remote_state mode; terraform_data.external_mode_guard exists in
+  # both modes and is a safe, always-present ordering dependency either way
+  # (its own precondition already fails the whole plan early if an external
+  # mode input is missing).
+  depends_on = [data.terraform_remote_state.platform, terraform_data.external_mode_guard]
 }

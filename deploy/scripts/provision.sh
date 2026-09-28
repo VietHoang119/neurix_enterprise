@@ -21,6 +21,18 @@
 #                     and the three Slack URLs to paste into the Slack app.
 #   all               Run every phase above in order.
 #
+# platform_mode ("remote_state" default, or "external") is read from the
+# tenant's own .tfvars file, not a CLI flag — see deploy/README.md "Testing
+# a tenant on the existing production platform". In external mode:
+#   - 'platform' and 'all' are unavailable for the production project
+#     (guard_not_production always refuses it; run the other phases
+#     individually instead).
+#   - Every other phase goes through the layered production opt-in gate
+#     (NEURIX_ALLOW_PRODUCTION_PROJECT=yes + a typed tenant_id confirmation)
+#     when --project-id is the production project.
+#   - terraform/tenant applies are plan-then-verify-create-only before
+#     apply (see check_create_only_plan.py).
+#
 # See deploy/README.md for prerequisites and the full walkthrough.
 
 set -euo pipefail
@@ -63,13 +75,6 @@ if [[ -z "$PHASE" ]]; then
   exit 1
 fi
 
-# ---------------------------------------------------------------------------
-# Hard safety rule: never run against production. Checked before anything
-# else parses further, and again per-phase below, so a phase can never be
-# invoked without this guard having run in the same process.
-# ---------------------------------------------------------------------------
-guard_not_production "$PROJECT_ID"
-
 require_cmd terraform gcloud python3
 
 [[ -n "$PROJECT_ID" ]] || { log_error "--project-id is required."; exit 1; }
@@ -82,6 +87,49 @@ if [[ -n "$TENANT_ID" ]]; then
   validate_tenant_id "$TENANT_ID"
   TFVARS="${TFVARS:-$TF_DIR/tenants/${TENANT_ID}.tfvars}"
 fi
+
+# platform_mode lives in the tenant's own .tfvars (alongside dedicated_bucket,
+# gemini_model, etc.) rather than behind a CLI flag — it's a fixed property
+# of a given tenant/environment, not something to retype on every command.
+# Defaults to "remote_state" (the normal flow) when unset or when there is
+# no tenant in play for this phase (e.g. 'platform').
+PLATFORM_MODE="remote_state"
+if [[ -n "$TENANT_ID" ]]; then
+  PLATFORM_MODE="$(read_tfvar_string "$TFVARS" "platform_mode" "remote_state")"
+fi
+
+# ---------------------------------------------------------------------------
+# Safety rule, layered (see deploy/README.md "Hard safety rule" and "Testing
+# a tenant on the existing production platform"):
+#
+#   - 'platform' and 'all' (which always runs 'platform' first) ALWAYS
+#     refuse the production project outright — guard_not_production has no
+#     override of any kind, for any phase that touches platform/.
+#   - Every other, tenant-only phase goes through the layered opt-in gate
+#     (guard_tenant_production_opt_in), which is a no-op for any project
+#     other than production, and for production requires external platform
+#     mode + an explicit env var + a typed tenant_id confirmation.
+#
+# Checked before any other side effect, so a phase can never be invoked
+# without the right guard having run first in the same process.
+# ---------------------------------------------------------------------------
+case "$PHASE" in
+  platform | all)
+    guard_not_production "$PROJECT_ID"
+    if [[ "$PHASE" == "all" && "$PROJECT_ID" == "$NEURIX_PRODUCTION_PROJECT_ID" ]]; then
+      # Unreachable in practice (guard_not_production above already exited),
+      # kept as an explicit, readable statement of intent: 'all' is never
+      # available for production, even in external mode — it always runs
+      # 'platform' first, which is exactly what external mode exists to
+      # avoid touching. Run the individual tenant-only phases instead.
+      log_error "'all' always includes the platform phase and is never available for the production project. Run the tenant-only phases individually (tenant-resources, migrate, slack-secrets, app, frontend)."
+      exit 1
+    fi
+    ;;
+  *)
+    guard_tenant_production_opt_in "$PROJECT_ID" "$TENANT_ID" "$PLATFORM_MODE"
+    ;;
+esac
 
 tf_platform() {
   terraform -chdir="$TF_DIR/platform" "$@"
@@ -112,6 +160,39 @@ require_tenant_args() {
   fi
 }
 
+CHECK_PLAN_SCRIPT="$SCRIPT_DIR/check_create_only_plan.py"
+
+# tf_tenant_apply <var-args...>
+#
+# Applies terraform/tenant with the given -var args. In the normal
+# (remote_state) flow this is a plain `terraform apply`, exactly as before —
+# updates (e.g. a new backend_image on redeploy) are expected and fine.
+#
+# In external platform mode, this instead does plan -> verify the plan is
+# create-only (check_create_only_plan.py; see deploy/README.md "Terraform
+# safety net") -> apply exactly that saved plan. This is the safety net that
+# stops a first apply against a platform stack that already exists (e.g.
+# production) from ever updating, replacing, or deleting something that's
+# already there — only ever creating new, tenant-suffixed resources.
+tf_tenant_apply() {
+  if [[ "$PLATFORM_MODE" != "external" ]]; then
+    tf_tenant apply -input=false "$@"
+    return
+  fi
+
+  local planfile="$STATE_DIR/${PROJECT_ID}-${TENANT_ID}.tfplan"
+  log_info "External platform mode: planning, then verifying the plan only creates new resources..."
+  tf_tenant plan -input=false -out="$planfile" "$@"
+  if ! tf_tenant show -json "$planfile" | python3 "$CHECK_PLAN_SCRIPT"; then
+    rm -f "$planfile"
+    log_error "Refusing to apply: the plan above would change or delete an existing resource. See check_create_only_plan.py's output above for exactly which one(s)."
+    exit 1
+  fi
+  log_info "Plan verified create-only. Applying..."
+  tf_tenant apply -input=false "$planfile"
+  rm -f "$planfile"
+}
+
 # ---------------------------------------------------------------------------
 # Phase 1a: platform (once per project)
 # ---------------------------------------------------------------------------
@@ -129,9 +210,9 @@ phase_platform() {
 # ---------------------------------------------------------------------------
 phase_tenant_resources() {
   require_tenant_args
-  log_info "=== Terraform phase 1: tenant resources ($TENANT_ID) ==="
+  log_info "=== Terraform phase 1: tenant resources ($TENANT_ID, platform_mode=$PLATFORM_MODE) ==="
   init_tenant
-  tf_tenant apply -input=false \
+  tf_tenant_apply \
     -var-file="$TFVARS" \
     -var="project_id=$PROJECT_ID" \
     -var="region=$REGION" \
@@ -146,22 +227,36 @@ phase_tenant_resources() {
 # ---------------------------------------------------------------------------
 phase_migrate() {
   require_tenant_args
-  log_info "=== Phase 2: migrate database and build backend image ($TENANT_ID) ==="
+  log_info "=== Phase 2: migrate database and build backend image ($TENANT_ID, platform_mode=$PLATFORM_MODE) ==="
 
-  init_platform >/dev/null
+  # Every value needed here (instance, db name/user, Artifact Registry repo,
+  # Cloud Build SA) comes from terraform/tenant's own outputs, which already
+  # resolve to the right thing in either platform_mode — see
+  # terraform/tenant/platform_source.tf's local.platform. No `tf_platform`
+  # call is needed (or possible, in external mode: there is no platform
+  # Terraform state for production).
   init_tenant >/dev/null
 
-  local instance_connection_name db_name db_app_user sql_root_secret ar_repo cloudbuild_sa
-  instance_connection_name="$(tf_platform output -raw sql_instance_connection_name)"
-  ar_repo="$(tf_platform output -raw artifact_registry_repository)"
-  cloudbuild_sa="$(tf_platform output -raw cloudbuild_service_account_email)"
+  local instance_connection_name db_name db_app_user ar_repo cloudbuild_sa
+  instance_connection_name="$(tf_tenant output -raw sql_instance_connection_name)"
+  ar_repo="$(tf_tenant output -raw artifact_registry_repository)"
+  cloudbuild_sa="$(tf_tenant output -raw cloudbuild_service_account_email)"
   db_name="$(tf_tenant output -raw db_name)"
   db_app_user="$(tf_tenant output -raw db_user)"
-  sql_root_secret="$(tf_tenant output -raw sql_root_password_secret_id)"
 
-  log_info "Reading Cloud SQL root password from Secret Manager (never printed)..."
+  guard_sql_target "$PROJECT_ID" "$TENANT_ID" "$instance_connection_name" "$db_name" "postgres"
+
   local root_password
-  root_password="$(gcloud secrets versions access latest --secret="$sql_root_secret" --project="$PROJECT_ID")"
+  if [[ "$PLATFORM_MODE" == "external" ]]; then
+    log_warn "External platform mode: the Cloud SQL admin (postgres) password for the existing instance is not in Terraform state or a known Secret Manager secret."
+    log_warn "It is never guessed or assumed here — enter it directly."
+    read_secret "Cloud SQL 'postgres' user password for instance '$instance_connection_name':" root_password
+  else
+    local sql_root_secret
+    sql_root_secret="$(tf_tenant output -raw sql_root_password_secret_id)"
+    log_info "Reading Cloud SQL root password from Secret Manager (never printed)..."
+    root_password="$(gcloud secrets versions access latest --secret="$sql_root_secret" --project="$PROJECT_ID")"
+  fi
 
   log_info "Running backend/scripts/run_migrations.py against $db_name as postgres..."
   (
@@ -173,12 +268,17 @@ phase_migrate() {
     python3 -m scripts.run_migrations
   )
 
+  guard_sql_target "$PROJECT_ID" "$TENANT_ID" "$instance_connection_name" "$db_name" "postgres"
   log_info "Granting $db_app_user access (existing tables/sequences + ALTER DEFAULT PRIVILEGES for future migrations)..."
   INSTANCE_CONNECTION_NAME="$instance_connection_name" \
     DB_USER="postgres" \
     DB_PASSWORD="$root_password" \
     DB_NAME="$db_name" \
-    python3 "$SCRIPT_DIR/grant_tenant.py" --db-app-user "$db_app_user" --migration-role postgres
+    python3 "$SCRIPT_DIR/grant_tenant.py" \
+      --db-app-user "$db_app_user" \
+      --migration-role postgres \
+      --project-id "$PROJECT_ID" \
+      --tenant-id "$TENANT_ID"
   unset root_password
 
   local image_tag image
@@ -186,11 +286,18 @@ phase_migrate() {
   image="${ar_repo}/backend:${image_tag}"
 
   log_info "Building and pushing $image via Cloud Build..."
-  gcloud builds submit "$REPO_ROOT/backend" \
-    --project="$PROJECT_ID" \
-    --tag="$image" \
-    --service-account="projects/$PROJECT_ID/serviceAccounts/$cloudbuild_sa" \
+  local -a build_args=(
+    "$REPO_ROOT/backend"
+    --project="$PROJECT_ID"
+    --tag="$image"
     --gcs-log-dir="gs://${PROJECT_ID}_cloudbuild/logs"
+  )
+  if [[ -n "$cloudbuild_sa" ]]; then
+    build_args+=(--service-account="projects/$PROJECT_ID/serviceAccounts/$cloudbuild_sa")
+  else
+    log_warn "No Cloud Build service account known (external platform mode with external_cloudbuild_service_account_email unset) — using the project's default Cloud Build service account instead."
+  fi
+  gcloud builds submit "${build_args[@]}"
 
   echo "$image" > "$IMAGE_STATE_FILE"
   log_info "Image built: $image"
@@ -242,7 +349,9 @@ EOF
   gcloud_secret_add_version "$PROJECT_ID" "slack-signing-secret-${TENANT_ID}" "$signing_secret"
   unset bot_token signing_secret
 
-  if confirm "Set the Gemini API key now too? (You can skip and add it later with: gcloud secrets versions add gemini-api-key-${TENANT_ID})"; then
+  if [[ "$PLATFORM_MODE" == "external" ]]; then
+    log_info "External platform mode: this tenant's runtime service account was already granted read access (by the tenant-resources phase) to the EXISTING Gemini secret named in external_gemini_api_key_secret_id — no new secret or version to set here."
+  elif confirm "Set the Gemini API key now too? (You can skip and add it later with: gcloud secrets versions add gemini-api-key-${TENANT_ID})"; then
     read_secret "Gemini API key:" gemini_key
     gcloud_secret_add_version "$PROJECT_ID" "gemini-api-key-${TENANT_ID}" "$gemini_key"
     unset gemini_key
@@ -258,7 +367,7 @@ EOF
 # ---------------------------------------------------------------------------
 phase_app() {
   require_tenant_args
-  log_info "=== Terraform phase 2: Cloud Run + Firebase Hosting ($TENANT_ID) ==="
+  log_info "=== Terraform phase 2: Cloud Run + Firebase Hosting ($TENANT_ID, platform_mode=$PLATFORM_MODE) ==="
 
   local image
   if [[ -n "$IMAGE_OVERRIDE" ]]; then
@@ -277,7 +386,7 @@ phase_app() {
   local frontend_url="https://${TENANT_ID}-neurix.web.app"
 
   init_tenant >/dev/null
-  tf_tenant apply -input=false \
+  tf_tenant_apply \
     -var-file="$TFVARS" \
     -var="project_id=$PROJECT_ID" \
     -var="region=$REGION" \
@@ -317,7 +426,10 @@ phase_frontend() {
   local cloud_run_url site_id firebase_project_id
   cloud_run_url="$(tf_tenant output -raw cloud_run_url)"
   site_id="$(tf_tenant output -raw hosting_site_id)"
-  firebase_project_id="$(tf_platform output -raw firebase_project_id 2>/dev/null || echo "$PROJECT_ID")"
+  # tenant/'s own firebase_project_id output resolves correctly in either
+  # platform_mode (see terraform/tenant/platform_source.tf) — no
+  # `tf_platform` call needed (and none is possible in external mode).
+  firebase_project_id="$(tf_tenant output -raw firebase_project_id 2>/dev/null || echo "$PROJECT_ID")"
 
   if [[ -z "$cloud_run_url" || "$cloud_run_url" == "null" ]]; then
     log_error "Cloud Run URL not available — run the 'app' phase first."

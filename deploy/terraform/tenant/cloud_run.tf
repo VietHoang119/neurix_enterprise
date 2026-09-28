@@ -153,6 +153,25 @@ resource "google_cloud_run_v2_service" "backend" {
   # Run IAM layer.
   ingress = "INGRESS_TRAFFIC_ALL"
 
+  # deploy/scripts/release.sh ships new code by running
+  # `gcloud run services update --image ...` directly against Cloud Run,
+  # outside Terraform (see deploy/README.md "Releasing code vs changing
+  # infrastructure"). Without this, the next `terraform apply` for any
+  # reason (a new tenant, a platform re-apply, an unrelated variable change)
+  # would revert the service back to `var.backend_image` and silently roll
+  # back the release. `client`/`client_version` are populated by gcloud on
+  # every write it makes (the "Arbitrary identifier for the API client"
+  # fields — confirmed against the google provider's own resource schema);
+  # Terraform's config never sets them, so they'd otherwise show as
+  # permanent drift on every apply too.
+  lifecycle {
+    ignore_changes = [
+      client,
+      client_version,
+      template[0].containers[0].image,
+    ]
+  }
+
   depends_on = [
     google_secret_manager_secret_iam_member.db_password_accessor,
     google_secret_manager_secret_iam_member.slack_bot_token_accessor,

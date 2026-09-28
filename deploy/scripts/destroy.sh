@@ -179,7 +179,16 @@ destroy_platform() {
   log_warn "About to DESTROY the shared platform stack in project '$PROJECT_ID':"
   log_warn "  Cloud SQL instance (ALL tenant databases), Artifact Registry repo, shared bucket, Cloud Build SA, Firebase project link."
   log_warn "Only do this once every tenant sharing this platform has already been destroyed."
-  confirm "Type 'yes' to proceed" || { log_info "Aborted."; exit 1; }
+  log_warn ""
+  log_warn "NOTE: terraform/platform/main.tf's google_sql_database_instance also has"
+  log_warn "  lifecycle { prevent_destroy = true }"
+  log_warn "on top of deletion_protection. Unlike deletion_protection, prevent_destroy"
+  log_warn "cannot be turned off with a -var flag (Terraform requires it to be a literal"
+  log_warn "value in the .tf file) — this is deliberate: destroying the platform's SQL"
+  log_warn "instance must always be a conscious source edit, never just a script flag."
+  log_warn "If you actually intend to destroy this instance, comment out or remove that"
+  log_warn "lifecycle block in terraform/platform/main.tf first, then re-run this command."
+  confirm "Type 'yes' to proceed (assumes prevent_destroy has already been removed if needed)" || { log_info "Aborted."; exit 1; }
 
   terraform -chdir="$TF_DIR/platform" init -input=false \
     -backend-config="bucket=$STATE_BUCKET" \

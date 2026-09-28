@@ -162,6 +162,31 @@ require_tenant_args() {
 
 CHECK_PLAN_SCRIPT="$SCRIPT_DIR/check_create_only_plan.py"
 
+# tf_platform_apply <var-args...>
+#
+# Applies terraform/platform via plan -> verify (check_create_only_plan.py
+# --mode platform-reapply) -> apply exactly that saved plan. On a brand-new
+# project this plan is all "create" and passes trivially; the check earns
+# its keep on every later re-apply (a new sql_tier, a label change, a new
+# API to enable), where it still allows in-place updates but refuses to let
+# the run proceed if the plan would delete or replace the Cloud SQL
+# instance or any bucket — whether from an intentional-looking config edit
+# or an unintentional one (e.g. a force-new attribute change nobody meant to
+# make). See deploy/README.md "Releasing code vs changing infrastructure".
+tf_platform_apply() {
+  local planfile="$STATE_DIR/${PROJECT_ID}-platform.tfplan"
+  log_info "Planning platform apply, then verifying it never deletes/replaces a stateful resource..."
+  tf_platform plan -input=false -out="$planfile" "$@"
+  if ! tf_platform show -json "$planfile" | python3 "$CHECK_PLAN_SCRIPT" --mode platform-reapply; then
+    rm -f "$planfile"
+    log_error "Refusing to apply: the plan above would delete or replace a stateful platform resource (Cloud SQL instance, database, or bucket). See check_create_only_plan.py's output above."
+    exit 1
+  fi
+  log_info "Plan verified safe. Applying..."
+  tf_platform apply -input=false "$planfile"
+  rm -f "$planfile"
+}
+
 # tf_tenant_apply <var-args...>
 #
 # Applies terraform/tenant with the given -var args. In the normal
@@ -199,7 +224,7 @@ tf_tenant_apply() {
 phase_platform() {
   log_info "=== Terraform phase 1: platform stack ($PROJECT_ID) ==="
   init_platform
-  tf_platform apply -input=false \
+  tf_platform_apply \
     -var="project_id=$PROJECT_ID" \
     -var="region=$REGION"
   log_info "Platform stack applied."

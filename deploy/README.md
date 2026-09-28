@@ -60,9 +60,12 @@ deploy/
 │   ├── provision.sh                  # the 5 phases below, each callable alone
 │   ├── destroy.sh                    # tenant / platform / all teardown
 │   ├── smoke_test.sh                 # post-deploy checks (+ bucket isolation test)
+│   ├── release.sh                    # ship a new backend image — see "Releasing code vs changing infrastructure"
+│   ├── rollback.sh                   # shift traffic back to the previous revision, no rebuild
 │   ├── grant_tenant.py               # DB grants (see "Grants" below)
 │   ├── check_create_only_plan.py     # Terraform safety net (see below)
 │   ├── check_tenant_scoped_state.py  # destroy.sh external-mode safety net (see below)
+│   ├── check_migration_safety.py     # destructive-migration lint, run by release.sh (see below)
 │   └── sql/grant_app_user.sql.tmpl
 ├── slack/slack-manifest.yml      # app manifest TEMPLATE, not auto-applied
 └── .gitignore                    # state, real tfvars, anything secret-shaped
@@ -84,9 +87,11 @@ versions or the backend type, change all three copies together.
   `npm`, and `firebase-tools` (via `npx firebase-tools`, no global install
   needed).
 - A GCS bucket to hold Terraform state (create once, by hand — Terraform
-  cannot create the bucket it's about to store its own state in):
+  cannot create the bucket it's about to store its own state in), with
+  versioning on so a bad state write is recoverable:
   ```bash
   gcloud storage buckets create gs://YOUR_TF_STATE_BUCKET --project=YOUR_TEST_PROJECT --location=asia-southeast1 --uniform-bucket-level-access
+  gcloud storage buckets update gs://YOUR_TF_STATE_BUCKET --versioning
   ```
 - A brand-new GCP project, billing enabled, **not** `neurix-enterprise`.
 - Copy `terraform/tenants/example.tfvars` to `terraform/tenants/<tenant_id>.tfvars`
@@ -122,6 +127,110 @@ Two things stay manual no matter what (see "Known unknowns" below): Slack
 app creation/install (phase 3, by design), and enabling the Google sign-in
 provider in Firebase Auth (no reliable CLI/Terraform path — both `app` and
 `frontend` phases print a reminder).
+
+## Releasing code vs changing infrastructure
+
+`scripts/provision.sh`'s `app`/`migrate` phases stand a tenant up the first
+time. Every day after that, most changes fall into one of two clearly
+separate paths — pick the row that matches what actually changed:
+
+| Change type | Command | Touches the platform (Cloud SQL instance, Artifact Registry, shared bucket, APIs)? | Touches Terraform state? |
+|---|---|---|---|
+| Backend code change (no schema change) | `scripts/release.sh --project-id ID --state-bucket BUCKET TENANT [TENANT ...]` | No | No |
+| Backend code change + an **additive** migration (new table/column/index) | Same — `release.sh` runs migrations itself, before the image swap | No | No |
+| Backend code change + a **destructive** migration (drop/rename/tighten/retype) | Split into two releases — see "Expand/contract" below | No | No |
+| Undo a bad release for one tenant | `scripts/rollback.sh --project-id ID TENANT` | No | No |
+| Frontend code change | `scripts/provision.sh frontend --project-id ID --tenant-id TID ...` (per tenant — see "Frontend releases are per tenant" below) | No | No |
+| New tenant | `scripts/provision.sh tenant-resources` then `migrate`, `slack-secrets`, `app`, `frontend` | No (creates tenant-scoped resources only) | Yes — tenant's own state prefix only |
+| Platform change (new API, SQL tier, bucket setting) | `scripts/provision.sh platform --project-id ID` | Yes, by definition | Yes — platform's own state prefix |
+| Remove a tenant | `scripts/destroy.sh tenant --project-id ID --tenant-id TID ...` | No | Yes — tenant's own state prefix only |
+
+The two release scripts (`release.sh`, `rollback.sh`) **never run
+Terraform** — they only call `gcloud builds submit`, `gcloud run services
+update`/`update-traffic`, and the migration runner directly. This is
+deliberate, for two reasons:
+
+1. **A code change must never need `terraform apply`.** Requiring a
+   Terraform run to ship a one-line backend fix would mean every release
+   carries the (small but real) risk of an unrelated infrastructure drift
+   getting applied at the same time, and requires whoever ships code to
+   also have platform-level Terraform permissions.
+2. **A later `terraform apply` must never silently roll a release back.**
+   `terraform/tenant/cloud_run.tf`'s `google_cloud_run_v2_service.backend`
+   has `lifecycle { ignore_changes = [client, client_version,
+   template[0].containers[0].image] }` specifically so that the image
+   `release.sh` deployed keeps running even if someone re-applies
+   `terraform/tenant` for an unrelated reason (e.g. provisioning a new
+   tenant touches the same state file's provider config, or a platform
+   re-apply cascades). Without this, the next `apply` would revert Cloud
+   Run to whatever `var.backend_image` last resolved to in Terraform's own
+   config/state — which is exactly the old image, since Terraform was never
+   told about the release.
+
+### Rollback procedure
+
+`scripts/rollback.sh --project-id ID [--region REGION] <tenant_id>` shifts
+100% of that tenant's Cloud Run traffic back to the previous revision via
+`gcloud run services update-traffic --to-revisions=...`. It determines "the
+previous revision" itself, live, from Cloud Run's own revision history —
+it does not depend on any state `release.sh` wrote, so it works even from a
+different machine or session than the release being undone. It refuses if
+the service has fewer than two revisions. It does **not** roll back a
+migration — see "Expand/contract" below for why that's a separate,
+deliberate decision rather than a gap.
+
+### Expand/contract: why migrations run before the code swap
+
+`release.sh` runs a tenant's migrations, *then* updates its Cloud Run image
+— and during a rolling multi-tenant release, other tenants (and briefly,
+this tenant's own previous revision) are still running the OLD code against
+the NEW schema until their own release goes out, or until rollback.sh, if
+needed, puts the old revision back in front of the new schema.
+
+This only works if every migration that ships with a release is one the OLD
+code can also run against unmodified — i.e. **additive only**:
+
+- New tables.
+- New nullable columns (or columns with a default).
+- New indexes.
+
+A migration that **drops** a column, **renames** anything, **tightens** a
+column to `NOT NULL`, or **changes a column's type** breaks that overlap
+window — the old revision (still serving traffic somewhere, or restored by
+a rollback) will fail the moment it touches the changed shape. Migrations
+like that belong in a **later** release, shipped only once no running
+revision anywhere needs the old shape anymore (i.e. after every tenant has
+already picked up the release that stopped using it).
+
+`scripts/check_migration_safety.py` enforces this mechanically:
+`release.sh` runs it first, before a single image is built, against every
+file in `backend/db/migrations/`. It pattern-matches for `DROP`, `RENAME`,
+`SET NOT NULL`, and column type changes; a migration file containing one of
+these fails the release unless that same file also contains an explicit,
+reviewed approval comment:
+
+```sql
+-- destructive-migration-approved: <reason this is safe to ship now>
+```
+
+Add that line only once you've confirmed no running revision still needs
+the old shape — the whole point of the check is to make that a deliberate,
+visible decision rather than something that happens by accident inside an
+otherwise-routine release.
+
+### Frontend releases are per tenant
+
+Unlike the backend image (one build, deployed to every tenant in a
+`release.sh` run), the frontend is a **static build with tenant-specific
+values compiled in at build time** (`VITE_API_BASE_URL`,
+`VITE_FIREBASE_*` — see `scripts/provision.sh`'s `frontend` phase), so
+there is no single shared "frontend image" to roll out. A frontend code
+change is released by re-running `scripts/provision.sh frontend
+--project-id ID --tenant-id TID ...` once per tenant that needs it; there
+is currently no multi-tenant frontend equivalent of `release.sh`. Making
+each tenant's frontend build genuinely isolated from the others (rather
+than just parameterized by build-time env vars) is tracked as separate,
+follow-on work and is out of scope here.
 
 ## Things Terraform must NOT do (and doesn't)
 
@@ -625,16 +734,121 @@ real** (still without real GCP credentials):
 - `python3 -m py_compile` on `check_create_only_plan.py` and
   `check_tenant_scoped_state.py`, alongside `grant_tenant.py`.
 
+**Release path + platform re-apply safety net, added in this pass —
+additionally verified for real** (still without real GCP credentials; this
+time `registry.terraform.io` API access was also blocked for `terraform
+init`, same as before, so a local filesystem-mirror install of the real
+`hashicorp/google`/`hashicorp/google-beta` 8.4.0 and `hashicorp/random`
+3.9.1 provider binaries — downloaded directly from
+`releases.hashicorp.com`, which was reachable — was rebuilt for this pass
+too, the same workaround as the original build):
+
+- `terraform fmt -recursive -diff -check` on the whole `terraform/` tree:
+  clean.
+- `terraform init` + `terraform validate` for **both** `platform/` and
+  `tenant/` against the real, pinned 8.4.0 provider schema: both clean.
+- `terraform plan` with dummy values for both modules (temporary
+  local-backend override, removed afterwards, nothing committed),
+  including `tenant/` with `enable_app = true` specifically to exercise the
+  new `lifecycle` block on `google_cloud_run_v2_service.backend`: both
+  plans fully resolved the resource graph (for `tenant/`, as far as the
+  `terraform_remote_state` platform lookup, which itself needs GCS
+  credentials) and failed cleanly at Google Cloud authentication, the
+  expected failure with no ADC configured — confirming the new `lifecycle`
+  blocks on `google_sql_database_instance.main` (`prevent_destroy`) and
+  `google_cloud_run_v2_service.backend` (`ignore_changes`) parse and don't
+  break the graph, not just that they're syntactically valid.
+- The `google_sql_database_instance` force-replacement fields cited in the
+  README/audit (`name`, `project`, `region`, `collation`,
+  `encryption_key_name`) were confirmed against the actual
+  `hashicorp/terraform-provider-google` v8.4.0 source
+  (`resource_sql_database_instance.go`, matching the version pinned in
+  `versions.tf`) — not assumed from general Cloud SQL knowledge — since
+  `terraform providers schema -json` does not itself expose `ForceNew`
+  metadata (that's provider SDK diff logic, only visible via a real
+  plan-against-state, which real credentials would be needed for here).
+  Similarly, `google_cloud_run_v2_service`'s `client`/`client_version`
+  fields (why they're in the new `ignore_changes` list) were confirmed
+  against that same provider version's own resource source.
+- `check_create_only_plan.py --mode platform-reapply`, run against four
+  hand-made plan JSON files (no cloud credentials needed): a plan with only
+  an in-place `update` on the SQL instance passes; a plan replacing the SQL
+  instance (`["delete", "create"]`) fails, naming it; a plan deleting a
+  bucket fails, naming it; a plan replacing a *non-stateful* resource
+  (a service account) passes, confirming the mode doesn't over-restrict.
+  The existing default (`create-only`) mode was re-run afterwards and
+  still rejects an `update` and still accepts a `create`-only plan exactly
+  as before — confirming the new `--mode` flag didn't change default
+  behavior for `provision.sh`'s existing external-platform-mode use of
+  this script.
+- `check_migration_safety.py` run against the real
+  `backend/db/migrations/*.sql` (all 5 files: pass, as expected — they're
+  all additive) and against five hand-made synthetic migration files: an
+  unapproved `DROP COLUMN` fails, naming it; the same statement with a
+  `-- destructive-migration-approved: ...` comment passes; unapproved
+  `RENAME COLUMN`, `SET NOT NULL`, and a column `TYPE` change each fail
+  independently; a file that only *mentions* `DROP TABLE` inside a SQL
+  comment (not as a real statement) passes, confirming the comment-stripping
+  doesn't false-positive on prose.
+- `release.sh` and `rollback.sh`: `shellcheck` clean (run together with the
+  rest of `scripts/*.sh` so `source ./lib.sh` resolves). Both were then run
+  for real against a stub `gcloud` (logging every invocation and faking
+  just enough output — service describe/update/update-traffic, revision
+  list, secret access, build submit) and a stub backend/migration runner
+  (a minimal `backend/scripts/run_migrations.py` that logs its env vars and
+  exits 0, since no real Postgres/Cloud SQL was available here), in a
+  scratch copy of the repo layout with `smoke_test.sh` itself replaced by a
+  thin stub (the real `smoke_test.sh` already does its own real `terraform
+  output` state lookup, audited separately above; replacing it here
+  isolated the test to `release.sh`'s own control flow):
+  - Two-tenant success path: confirmed build-once (`gcloud builds submit`
+    called exactly once, before either tenant), canary-first ordering,
+    migrations run before the Cloud Run update for each tenant, the
+    previous revision recorded and logged before each update,
+    `RELEASE=<tag>` set as both an env var and a label, and the Cloud SQL
+    root password fetched from Secret Manager exactly **once** for both
+    tenants (an initial version of the caching had a subshell bug — the
+    whole point of testing this for real instead of just reading the
+    code — where the cached value never left the `$(...)` subshell it was
+    fetched in, silently reprompting per tenant; fixed by calling the
+    fetch function directly, not via command substitution, so it can set
+    a variable in the caller's shell).
+  - Three-tenant stop-on-failure path (stub `gcloud run services update`
+    fails specifically for the second tenant): confirmed the first tenant's
+    migration, image update, and smoke test all completed and were logged
+    as successful; the second tenant's migration ran (it happens before the
+    image update) but its Cloud Run update failure stopped the script
+    immediately, printing that tenant's recorded previous revision and the
+    exact `rollback.sh` command to run; the third tenant had **zero**
+    logged `gcloud`/`smoke_test` calls — confirmed not touched.
+  - Migration-safety gate: dropping an unapproved destructive migration
+    file into the scratch `backend/db/migrations/` and re-running
+    confirmed the release stops at the check with **zero** `gcloud` calls
+    logged — no build, no tenant touched.
+  - `rollback.sh`: confirmed it correctly picks the second-newest of two
+    stubbed revisions and calls `update-traffic --to-revisions=<that
+    revision>=100`; confirmed it refuses (exit 1, no `update-traffic` call)
+    when the stubbed service has only one revision, and separately when the
+    stubbed `describe` reports the service doesn't exist at all.
+  - This does **not** substitute for running `release.sh`/`rollback.sh`
+    against a real Cloud SQL instance and Cloud Run service — that's
+    explicitly still Hoàng's real end-to-end test, same as the rest of this
+    package (see below).
+
 What was **written but not run against real infrastructure**: every
 `terraform apply`/`destroy` against actual GCP resources (both the normal
 flow and external platform mode), `gcloud builds submit`, the Slack app
 creation/install flow, the frontend build+Hosting deploy, and
-`smoke_test.sh`'s HTTP checks. This also means the *substance* of the
-production-testing pre-flight checklist (a real Cloud SQL backup, the real
-read-only lookups against `neurix-enterprise`) was written and reasoned
-through but not physically executed here — Hoàng will do the real
-end-to-end test, on a fresh GCP project first and then, following this
-README's "Testing a tenant on the existing production platform" section,
+`smoke_test.sh`'s HTTP checks. The same is true for `release.sh`'s and
+`rollback.sh`'s real `gcloud`/migration calls (only stubbed, per above) —
+neither a real `gcloud run services update`/`update-traffic` nor a real
+migration run against a real Cloud SQL instance happened here. This also
+means the *substance* of the production-testing pre-flight checklist (a
+real Cloud SQL backup, the real read-only lookups against
+`neurix-enterprise`) was written and reasoned through but not physically
+executed here — Hoàng will do the real end-to-end test, on a fresh GCP
+project first and then, following this README's "Testing a tenant on the
+existing production platform" section,
 against `neurix-enterprise` itself.
 
 ## Judgment calls made
@@ -726,6 +940,48 @@ against `neurix-enterprise` itself.
   deliberately left hard-refused — it spans two tenants and reaches into
   the platform's *shared* bucket directly via service-account impersonation,
   which is a materially different risk profile.
+- **`release.sh` re-derives platform facts deterministically instead of
+  reading them from Terraform state** (Cloud Run service name, database
+  name, Cloud SQL instance connection name, Artifact Registry repository,
+  the Cloud Build service account) — with an override flag for every one,
+  rather than doing what `provision.sh`'s `migrate` phase does
+  (`terraform output`). This was a deliberate choice, not an oversight: the
+  task this script was built for says explicitly "it must never run
+  Terraform." A read-only `terraform output` arguably wouldn't violate the
+  *spirit* of that (it can't change infrastructure), but re-deriving the
+  handful of values that are already fully determined by
+  `scripts/provision.sh`'s own normal-flow defaults keeps `release.sh`
+  genuinely independent of Terraform state/backend access entirely, which
+  seemed like the stronger, more literal reading and a better property for
+  a script whose whole purpose is "ship code without touching
+  infrastructure tooling." The one exception is `scripts/smoke_test.sh`,
+  which `release.sh` shells out to and which does do its own read-only
+  `terraform output` — that's the existing, already-audited script the task
+  explicitly says to run, not new Terraform usage introduced by this pass.
+- **`STATEFUL_RESOURCE_TYPES` in `check_create_only_plan.py`'s
+  `platform-reapply` mode is `google_sql_database_instance`,
+  `google_sql_database`, `google_storage_bucket`** — exactly the three
+  things the task named ("SQL instance, databases, buckets"), not a bigger
+  allowlist. `google_sql_user` (holds no data itself, just credentials) and
+  Secret Manager secrets (already separately protected — see below) were
+  deliberately left out; a genuinely new class of stateful platform
+  resource added later needs a deliberate addition here, not an assumption
+  that "stateful-sounding" is enough.
+- **`prevent_destroy = true` on the SQL instance is unconditional** (not
+  gated by a variable) — Terraform requires `lifecycle` meta-arguments to be
+  literal values, so this couldn't be made conditional on, say, a
+  `sql_prevent_destroy` variable the way `deletion_protection` already is.
+  This has a real consequence for `scripts/destroy.sh destroy_platform()`:
+  it can no longer tear down the SQL instance without a source edit first
+  (temporarily removing the `lifecycle` block in
+  `terraform/platform/main.tf`) — `destroy.sh` now prints this explicitly
+  before its confirmation prompt rather than silently failing partway
+  through. This is intentional friction, matching the task's own ask
+  ("forbid any delete or replace of stateful resources") and Terraform's
+  own design for `prevent_destroy`: destroying the instance holding every
+  tenant's data should require a conscious code change, not just a flag —
+  even though it makes the old "spin up a throwaway project, test, then
+  `destroy.sh all`" workflow one step less convenient than before.
 
 ## Open questions for Hoàng
 
@@ -755,3 +1011,19 @@ against `neurix-enterprise` itself.
 6. Firebase Auth authorized domains for a new Hosting site under the
    existing, already-in-use Firebase project — see "Testing a tenant on the
    existing production platform" → "What this mode does NOT test".
+7. `release.sh` re-derives the Cloud SQL instance name (`neurix-db`),
+   Artifact Registry repository id (`neurix-backend`), and Cloud Build
+   service account (`neurix-cloudbuild@PROJECT...`) from
+   `terraform/platform/variables.tf`'s own defaults rather than reading
+   Terraform state (see "Judgment calls made" above for why) — confirm none
+   of these were overridden away from their defaults on the real platform
+   apply; if one was, pass the matching `release.sh` override flag
+   (`--sql-instance-name`/`--ar-repo-id`/`--cloudbuild-service-account`)
+   every time, or say so and this can be changed to read Terraform output
+   instead.
+8. Real end-to-end verification of `release.sh`/`rollback.sh` against an
+   actual Cloud SQL instance and Cloud Run service — this pass verified
+   their control flow (ordering, stop-on-failure, previous-revision
+   recording, the password-caching bug found and fixed while testing) with
+   stub `gcloud` and a stub migration runner (see "Verification" above);
+   no real GCP credentials or Postgres instance were available here.

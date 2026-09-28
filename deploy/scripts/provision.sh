@@ -441,6 +441,15 @@ EOF
 
 # ---------------------------------------------------------------------------
 # Phase 5: frontend build + deploy, print Cloud Run + Slack URLs
+#
+# Everything this phase builds and deploys lives in a scratch workspace
+# created by `mktemp -d`, outside frontend/ and outside the repo entirely,
+# removed unconditionally by the trap below. This phase never writes an env
+# file into frontend/, never builds into frontend/dist, and never touches
+# frontend/.firebaserc or frontend/firebase.json — see deploy/README.md
+# "Frontend build/deploy isolation" for why: a later *production* frontend
+# build/deploy run from this same working tree must never pick up a test
+# tenant's backend URL, Firebase config, or hosting target by accident.
 # ---------------------------------------------------------------------------
 phase_frontend() {
   require_tenant_args
@@ -460,6 +469,10 @@ phase_frontend() {
     log_error "Cloud Run URL not available — run the 'app' phase first."
     exit 1
   fi
+  if [[ -z "$site_id" || "$site_id" == "null" ]]; then
+    log_error "Hosting site id not available — run the 'app' phase first."
+    exit 1
+  fi
 
   log_info "Ensuring a Firebase Web App exists for this project..."
   local app_id
@@ -473,41 +486,88 @@ phase_frontend() {
   local sdkconfig_json
   sdkconfig_json="$(gcloud firebase apps sdkconfig web "$app_id" --project="$PROJECT_ID" --format=json)"
 
-  local env_file="$REPO_ROOT/frontend/.env"
-  python3 - "$sdkconfig_json" "$cloud_run_url" "$env_file" <<'PYEOF'
+  # Deliberately NOT `local`: the EXIT trap below fires when the whole
+  # script process exits, which happens after this function has already
+  # returned (including the case where `set -e` unwinds straight past this
+  # function on a later command's failure) — a `local` here would already
+  # be out of scope by then, making `$workdir` an unbound variable under
+  # `set -u` at the moment the trap actually runs.
+  workdir="$(mktemp -d "${TMPDIR:-/tmp}/neurix-frontend-${TENANT_ID}.XXXXXX")"
+  # The EXIT trap alone covers success and any `exit` triggered by `set -e`
+  # partway through this phase. SIGINT/SIGTERM need their own traps that
+  # explicitly `exit` afterward — a bare `trap ... INT TERM` with no `exit`
+  # inside the handler only runs the handler and then resumes the script
+  # where it left off (bash's documented behavior for a caught signal with
+  # no exit in its trap), which would let a Ctrl-C during the build/deploy
+  # step limp forward into later commands against an already-removed
+  # workdir instead of actually aborting.
+  trap 'rm -rf "$workdir"' EXIT
+  trap 'rm -rf "$workdir"; exit 130' INT
+  trap 'rm -rf "$workdir"; exit 143' TERM
+
+  local dist_dir="$workdir/dist"
+  local tmp_config="$workdir/firebase.tenant-deploy.json"
+
+  if [[ "$site_id" == "$firebase_project_id" ]]; then
+    log_error "Refusing: hosting_site_id ('$site_id') equals the project's default site ('$firebase_project_id')."
+    log_error "This guard exists to stop a tenant deploy from ever landing on the project's default Hosting site."
+    exit 1
+  fi
+
+  log_info "Writing a tenant-scoped, throwaway Firebase Hosting config to $tmp_config (frontend/.firebaserc and frontend/firebase.json are never read or written)..."
+  python3 - "$tmp_config" "$site_id" "$dist_dir" <<'PYEOF'
 import json
+import sys
+
+config_path, site_id, dist_dir = sys.argv[1:4]
+config = {
+    "hosting": {
+        "site": site_id,
+        "public": dist_dir,
+        "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
+        "rewrites": [{"source": "**", "destination": "/index.html"}],
+    }
+}
+with open(config_path, "w") as f:
+    json.dump(config, f, indent=2)
+    f.write("\n")
+PYEOF
+  guard_hosting_config_site "$tmp_config" "$site_id" "$firebase_project_id"
+
+  log_info "Building frontend into $dist_dir (VITE_* values are passed as env vars to the build process only, never written to frontend/.env — Vite gives a prefixed process env var priority over any .env file)..."
+  local build_env_script
+  build_env_script="$(python3 - "$sdkconfig_json" "$cloud_run_url" <<'PYEOF'
+import json
+import shlex
 import sys
 
 cfg = json.loads(sys.argv[1])
 cloud_run_url = sys.argv[2]
-env_file = sys.argv[3]
-
-with open(env_file, "w") as f:
-    f.write(f"""VITE_FIREBASE_API_KEY={cfg['apiKey']}
-VITE_FIREBASE_AUTH_DOMAIN={cfg['authDomain']}
-VITE_FIREBASE_PROJECT_ID={cfg['projectId']}
-VITE_FIREBASE_APP_ID={cfg['appId']}
-VITE_API_BASE_URL={cloud_run_url}
-""")
-print(f"Wrote {env_file} (API key length {len(cfg['apiKey'])})", file=sys.stderr)
+pairs = {
+    "VITE_FIREBASE_API_KEY": cfg["apiKey"],
+    "VITE_FIREBASE_AUTH_DOMAIN": cfg["authDomain"],
+    "VITE_FIREBASE_PROJECT_ID": cfg["projectId"],
+    "VITE_FIREBASE_APP_ID": cfg["appId"],
+    "VITE_API_BASE_URL": cloud_run_url,
+}
+for key, value in pairs.items():
+    print(f"export {key}={shlex.quote(value)}")
 PYEOF
+  )"
+  (
+    eval "$build_env_script"
+    cd "$REPO_ROOT/frontend"
+    npm install --no-audit --no-fund
+    npm run build -- --outDir "$dist_dir" --emptyOutDir
+  )
 
-  log_info "Building frontend (VITE_* values are compiled in at build time)..."
-  (cd "$REPO_ROOT/frontend" && npm install --no-audit --no-fund && npm run build)
+  log_info "Deploying to Firebase Hosting site '$site_id' via the throwaway --config above..."
+  local -a deploy_cmd=(npx --yes firebase-tools deploy --only hosting --config "$tmp_config" --project="$PROJECT_ID")
+  guard_hosting_deploy_args "$tmp_config" "${deploy_cmd[@]}"
+  log_info "Deploy command: ${deploy_cmd[*]}"
 
-  log_info "Pointing this deploy at Hosting site '$site_id' via a Firebase deploy target..."
-  (cd "$REPO_ROOT/frontend" && npx --yes firebase-tools target:apply hosting "$TENANT_ID" "$site_id" --project="$PROJECT_ID")
-
-  log_info "Deploying to Firebase Hosting..."
-  # NOTE (unverified — see deploy/README.md "Known unknowns"): this relies on
-  # Firebase's hosting-targets model, where a single untargeted `hosting`
-  # block in firebase.json is used for whichever target the --only flag
-  # names, with .firebaserc's target->site mapping (written above) choosing
-  # the actual site. If your firebase-tools version rejects this, the
-  # fallback is to add a temporary "site": "<site_id>" key to a copy of
-  # firebase.json and deploy with `firebase deploy --only hosting -c <copy>`.
-  if ! (cd "$REPO_ROOT/frontend" && npx --yes firebase-tools deploy --only "hosting:${TENANT_ID}" --project="$PROJECT_ID"); then
-    log_error "Targeted hosting deploy failed. See the NOTE above this line in provision.sh's frontend phase for the documented fallback (a firebase.json copy with an explicit \"site\" key)."
+  if ! (cd "$workdir" && "${deploy_cmd[@]}"); then
+    log_error "Hosting deploy failed. Nothing under frontend/ was touched by this phase; fix the underlying issue and re-run 'frontend'."
     exit 1
   fi
 

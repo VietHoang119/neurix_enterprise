@@ -121,7 +121,7 @@ overwrite).
 | 2 | `migrate` | Runs `backend/scripts/run_migrations.py` against the new tenant DB as `postgres`, applies grants (see below), builds+pushes the backend image via `gcloud builds submit`. | No |
 | 3 | `slack-secrets` | **Manual pause.** Prints exactly what to do in the Slack UI (create app from `slack/slack-manifest.yml`, install it, copy the bot token + signing secret), then prompts for them (hidden input) and stores them in Secret Manager. | **Yes** |
 | 4 | `app` | Terraform: Cloud Run service (image from phase 2, secrets from phase 3) + Firebase Hosting site. | No |
-| 5 | `frontend` | Builds the frontend with per-tenant `VITE_API_BASE_URL`/`VITE_FIREBASE_*` (compiled in at build time), deploys to the tenant's Hosting site, prints the Cloud Run URL and the three Slack URLs to paste back into the Slack app. | No (prints a manual follow-up) |
+| 5 | `frontend` | Builds the frontend with per-tenant `VITE_API_BASE_URL`/`VITE_FIREBASE_*` (compiled in at build time, passed as env vars — never written into `frontend/`) into a throwaway workspace, deploys it to the tenant's Hosting site via a throwaway Firebase config, prints the Cloud Run URL and the three Slack URLs to paste back into the Slack app. See "Frontend build/deploy isolation" below. | No (prints a manual follow-up) |
 
 Two things stay manual no matter what (see "Known unknowns" below): Slack
 app creation/install (phase 3, by design), and enabling the Google sign-in
@@ -358,22 +358,72 @@ the same reminder in the original manual flow (stopping the instance between
 sessions instead of destroying it is also an option if you're going to test
 again soon: `gcloud sql instances patch --activation-policy=NEVER`).
 
-### Firebase Hosting multi-site deploy mechanics
+### Frontend build/deploy isolation
 
-`scripts/provision.sh`'s `frontend` phase uses `firebase target:apply
-hosting <tenant> <site-id>` (writes to `frontend/.firebaserc`'s `targets`
-map — the same file the original runbook already edits by hand for
-`projects.default`, so this isn't new territory for that file) followed by
-`firebase deploy --only hosting:<tenant>`, relying on Firebase's documented
-hosting-targets model where a single untargeted `hosting` block in
-`frontend/firebase.json` applies to whichever site the `--only` flag
-resolves via `.firebaserc`. **This could not be verified against a live
-Firebase project in this environment** (network access to
-`firebase.google.com` docs and no real Firebase project were both
-unavailable here). If it errors on your real run, the documented fallback is
-to generate a temporary copy of `firebase.json` with an explicit
-`"site": "<site-id>"` key added to its `hosting` block and deploy with
-`firebase deploy --only hosting -c <that copy>` from within `frontend/`.
+`scripts/provision.sh`'s `frontend` phase builds and deploys a tenant's
+frontend **without ever writing into `frontend/`** — that directory is the
+same one a later *production* frontend build/deploy runs from, so anything
+left behind there (an env file, a stray build, a rewritten `.firebaserc`)
+is a trap for whoever runs that production build next, not just a detail of
+the tenant test. Concretely, per run:
+
+- **No env file.** The tenant's `VITE_FIREBASE_*`/`VITE_API_BASE_URL`
+  values are exported as environment variables around the `npm run build`
+  call only, never written to `frontend/.env` or any other file under
+  `frontend/`. Vite gives a `VITE_`-prefixed process environment variable
+  priority over the same key in an `.env` file (it only fills in from the
+  file when the process environment doesn't already have the key — see
+  Vite's `loadEnv`), so this is not a weaker substitute for the file, it's
+  the same compiled-in-at-build-time behavior with nothing left on disk
+  afterward.
+- **A throwaway workspace, not `frontend/dist`.** Everything this phase
+  builds — the Vite output and the temporary Firebase config below — lives
+  under a directory from `mktemp -d` (`${TMPDIR:-/tmp}/neurix-frontend-
+  <tenant>.XXXXXX`), outside `frontend/` and outside the repo entirely. The
+  build itself still runs from `frontend/` (so `npm install`/`vite` resolve
+  the project's `node_modules`/`vite.config.ts` normally), but its output
+  goes to that scratch directory via `vite build --outDir <dir>
+  --emptyOutDir` (a CLI flag, which overrides `vite.config.ts`'s
+  `build.outDir: "dist"`). `frontend/dist` — what a plain `firebase deploy
+  --only hosting` from `frontend/` would upload — is never touched.
+- **No `target:apply`, no site key in the repo's `firebase.json`.**
+  `frontend/.firebaserc` and `frontend/firebase.json` are never read or
+  written by this phase. Instead it writes a small, throwaway
+  `firebase.tenant-deploy.json` into that same scratch directory, with an
+  explicit `"site"` (the tenant's own `hosting_site_id` Terraform output)
+  and `"public"` pointing at the scratch build output by **absolute path**,
+  and deploys with `firebase deploy --only hosting --config
+  <that file>`. This was verified against firebase-tools' own source
+  (`lib/config.js`, `lib/detectProjectRoot.js`, `lib/hosting/config.js` —
+  see "Verification" below): passing `--config <path>` makes
+  `detectProjectRoot()` treat `<path>`'s own directory as the "project
+  directory" for that run (not `frontend/`, and not `--config`'s caller's
+  cwd), an absolute `"public"` path is returned as-is with no
+  project-directory containment check, and a `hosting` block with an
+  explicit `"site"` key resolves directly — `resolveTargets()` returns it
+  unchanged, no `.firebaserc` target lookup happens at all. `--project` is
+  passed explicitly on the command line for the same reason: so project
+  selection never depends on `frontend/.firebaserc`'s `projects.default`
+  either.
+- **Guarded before the deploy actually runs.** Two checks run before
+  `firebase deploy` is invoked (`guard_hosting_config_site` and
+  `guard_hosting_deploy_args` in `scripts/lib.sh`): the first re-reads the
+  throwaway config back off disk and refuses if its `hosting.site` doesn't
+  match the tenant's own site id, or if that site id equals the project's
+  own default site (a project's default Hosting site shares the project's
+  id — this is what would happen if `hosting_site_id` were ever empty or
+  wrong); the second refuses to run the deploy command at all unless its
+  argv explicitly contains `--config <that same throwaway file>`, so a
+  future edit to this phase can't accidentally fall back to a bare
+  `firebase deploy --only hosting` (which would use `frontend/firebase.json`
+  and whatever `frontend/.firebaserc`'s default project/site currently is).
+- **Cleanup on every exit path.** The scratch workspace is removed by a
+  `trap` on `EXIT` (covers success and any `set -e`-triggered failure) plus
+  explicit `INT`/`TERM` traps that `rm -rf` and then `exit` themselves —
+  bash does not terminate a script on a caught `SIGINT`/`SIGTERM` unless the
+  trap handler calls `exit` itself, so a bare `trap ... INT TERM` with no
+  `exit` inside would only run the handler and then resume the script
+  where it left off (see "Verification" below for how this was caught).
 
 ## Destroying
 
@@ -851,6 +901,82 @@ project first and then, following this README's "Testing a tenant on the
 existing production platform" section,
 against `neurix-enterprise` itself.
 
+**Frontend build/deploy isolation, added in this pass — additionally
+verified for real** (still without real Firebase/GCP credentials, so no
+actual `firebase deploy` reached a live Hosting site):
+
+- Downloaded the real `firebase-tools` package (`npm pack firebase-tools`)
+  and read `lib/config.js`, `lib/detectProjectRoot.js`, and
+  `lib/hosting/config.js` directly, rather than assuming Firebase's
+  documented targets model still applies with `--config`. Confirmed from
+  source, not docs: `detectProjectRoot()` uses `--config`'s own directory as
+  the project directory when `--config` is passed (not the caller's cwd);
+  `Config.path()` returns an absolute `"public"` value as-is, skipping the
+  "outside of project directory" check entirely; and `hostingConfig()`'s
+  `resolveTargets()` passes a config through unchanged whenever it already
+  has a `"site"` key, never consulting `.firebaserc`. This is what makes an
+  explicit `"site"` + absolute `"public"` in a throwaway `--config` file
+  work with no `.firebaserc`/`frontend/firebase.json` involvement at all,
+  rather than an unverified assumption the way the previous pass's
+  targets-based approach was flagged.
+- `shellcheck` on all of `deploy/scripts/*.sh` (`lib.sh`, `provision.sh`,
+  `destroy.sh`, `smoke_test.sh`, `release.sh`, `rollback.sh`): clean.
+- `bash -n` on `lib.sh` and `provision.sh`: clean.
+- `provision.sh frontend` run for real against stub `terraform`, `gcloud`,
+  `npm`, and `npx` executables (no real GCP/Firebase calls reached), in the
+  actual repo checkout, with the branch's real `frontend/.firebaserc` and
+  `frontend/firebase.json` snapshotted before each run:
+  - **Success path**: printed the exact `firebase-tools deploy` command
+    that would run (`npx --yes firebase-tools deploy --only hosting
+    --config <scratch-dir>/firebase.tenant-deploy.json
+    --project=<project>`); confirmed `git status --ignored frontend/` was
+    clean afterward (`nothing to commit, working tree clean`) with no new
+    ignored or untracked entries — no tenant output directory ever appears
+    under `frontend/` at all, since the build lands in a `mktemp -d`
+    workspace outside the repo; `frontend/.firebaserc` and
+    `frontend/firebase.json` byte-for-byte identical to their pre-run
+    snapshots (`diff` clean); `frontend/dist` and `frontend/.env` both
+    absent afterward; the scratch workspace itself removed after the run.
+  - **Failure path**: stub `npx` exiting 1 (simulating a failed Hosting
+    deploy) produced the phase's own error message and a non-zero exit,
+    and the scratch workspace was still removed — confirming the `EXIT`
+    trap fires on a `set -e`-triggered failure, not only on success.
+  - **Interrupt path**: sent `SIGINT` to the running phase mid-build (stub
+    `npm run build` sleeping). First attempt, with a bare
+    `trap ... EXIT INT TERM`, exposed a real bug: bash does not terminate a
+    script on a caught signal unless the trap handler itself calls `exit`,
+    so the script resumed past the interrupted build into the deploy step
+    against an already-removed workspace and errored there instead of
+    stopping cleanly. Fixed by giving `INT`/`TERM` their own trap
+    entries that `rm -rf` and then `exit 130`/`exit 143` explicitly.
+    Re-tested after the fix: the script now exits immediately with code
+    130 and the workspace is gone.
+  - **Guard test — default site**: pointed the stub `terraform`'s
+    `hosting_site_id` output at the same value as `firebase_project_id`
+    (the default-site scenario) and confirmed `phase_frontend` aborts
+    before any build or deploy step runs, naming both values, with the
+    scratch workspace still cleaned up.
+  - **`guard_hosting_deploy_args` unit-tested directly** (sourcing `lib.sh`
+    in isolation): a correctly-formed `deploy` argv containing
+    `--config <expected file>` passes silently; the same argv with
+    `--config` omitted entirely aborts (`exit 1`), naming the missing
+    file — confirmed this guard cannot be satisfied by an argv that would
+    otherwise run a bare `firebase deploy --only hosting`.
+  - Also found, while writing the trap: a `local workdir` inside
+    `phase_frontend` would have gone out of scope by the time the `EXIT`
+    trap actually runs (which happens after the function returns, at
+    process exit, not at `return`), making `$workdir` an unbound variable
+    under `set -u` on every successful run. Fixed by declaring `workdir`
+    without `local` (a deliberate, commented exception) so it survives for
+    the trap.
+- Not run: an actual `firebase deploy` against a live Hosting site (no
+  Firebase project or credentials available here — same limitation as the
+  rest of this package's frontend-phase verification), and a real
+  `npm run build` via real Vite (stubbed `npm`, since the point of this
+  pass's tests was the isolation/cleanup control flow, not Vite's own
+  build correctness, which is unrelated to this change and already
+  exercised by the frontend repo's own build).
+
 ## Judgment calls made
 
 - **Provider version**: pinned to `~> 8.4` for `google`/`google-beta` (the
@@ -982,12 +1108,40 @@ against `neurix-enterprise` itself.
   tenant's data should require a conscious code change, not just a flag —
   even though it makes the old "spin up a throwaway project, test, then
   `destroy.sh all`" workflow one step less convenient than before.
+- **Frontend scratch workspace location: `mktemp -d` under `$TMPDIR`/`/tmp`,
+  not a directory inside `frontend/` or `deploy/`** — the handoff offered
+  either `frontend/dist-${TENANT_ID}` (gitignored) or a temp directory
+  outside the repo as acceptable options. Chose the latter: it needs no new
+  `.gitignore` entry at all (there's nothing under `frontend/` to ignore),
+  and it makes "never lands in frontend/dist" true in the strongest sense —
+  there's no tenant-named directory under `frontend/` for a future
+  production build to even notice, let alone collide with.
+- **`"public"` in the throwaway Firebase config is an absolute path, not a
+  path relative to the config file's own directory** — both would have
+  worked (`Config.path()` resolves a relative path against the config
+  file's directory, per "Verification" above), but an absolute path skips
+  that resolution entirely and reads correctly no matter where the
+  throwaway config or the scratch build output end up, which is one fewer
+  thing to keep in sync between the two `mktemp` paths.
+- **`--project` passed explicitly on the deploy command, not left to
+  `.firebaserc`** — even though `frontend/.firebaserc` is never touched by
+  this phase, leaving project selection to Firebase's own
+  `.firebaserc`/environment-variable fallback chain would make the deploy's
+  target project depend on state this phase doesn't control. Passing
+  `--project="$PROJECT_ID"` explicitly (the same variable every other
+  `gcloud`/`terraform` call in this phase already uses) keeps the deploy
+  self-contained.
 
 ## Open questions for Hoàng
 
-1. Firebase Hosting multi-site deploy mechanics (targets vs. a `site` key in
-   `firebase.json`) — see "Known unknowns" above; verify on the first real
-   `frontend` phase run and report back if the fallback is needed.
+1. ~~Firebase Hosting multi-site deploy mechanics~~ — resolved in the
+   frontend-isolation pass: the `frontend` phase now always deploys via an
+   explicit `"site"` key in a throwaway `--config` file rather than
+   `target:apply` + `.firebaserc`, verified against firebase-tools' own
+   source (see "Frontend build/deploy isolation" and "Verification"
+   below). Still worth confirming on the first real run against a live
+   Firebase project, since no real project was available to test against
+   here.
 2. Shared-bucket IAM condition signed-URL isolation — run the two-tenant
    test above before treating `dedicated_bucket = false` as a real isolation
    boundary for any tenant that matters.

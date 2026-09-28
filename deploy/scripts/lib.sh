@@ -272,6 +272,72 @@ gcloud_secret_add_version() {
     --data-file=-
 }
 
+# guard_hosting_config_site <config_file> <site_id> <default_site>
+#
+# Defense-in-depth check run immediately before every tenant frontend
+# deploy, right after writing the throwaway Firebase Hosting config for
+# this run — mirrors guard_sql_target's pattern of re-verifying a trusted
+# value (here, Terraform's own hosting_site_id output) rather than assuming
+# it. Confirms (a) the config file actually contains the tenant's own site
+# id, not something a bug silently swapped, and (b) that site is not the
+# project's own default Hosting site (which is auto-created under the
+# project id itself) — see deploy/README.md "Frontend build/deploy
+# isolation" for why landing on the default site would be a problem.
+guard_hosting_config_site() {
+  local config_file="$1" site_id="$2" default_site="$3"
+
+  if [[ -z "$site_id" || "$site_id" == "null" ]]; then
+    log_error "guard_hosting_config_site: no site_id given."
+    exit 1
+  fi
+  if [[ "$site_id" == "$default_site" ]]; then
+    log_error "Refusing: Hosting site '$site_id' is the project's default site ('$default_site')."
+    log_error "This guard exists to stop a tenant deploy from ever landing on the project's default Hosting site instead of a tenant-suffixed one."
+    exit 1
+  fi
+
+  local parsed_site
+  if ! parsed_site="$(python3 -c '
+import json, sys
+with open(sys.argv[1]) as f:
+    cfg = json.load(f)
+print(cfg["hosting"]["site"])
+' "$config_file" 2>/dev/null)"; then
+    log_error "guard_hosting_config_site: could not read hosting.site back from $config_file."
+    exit 1
+  fi
+  if [[ "$parsed_site" != "$site_id" ]]; then
+    log_error "guard_hosting_config_site: $config_file's hosting.site ('$parsed_site') does not match the expected tenant site ('$site_id')."
+    exit 1
+  fi
+}
+
+# guard_hosting_deploy_args <expected_config_path> <deploy argv...>
+#
+# Refuses to run a Firebase Hosting deploy whose argv doesn't explicitly
+# pin --config to the tenant-scoped throwaway config this phase just wrote
+# and verified. Exists specifically to stop a bare `firebase deploy --only
+# hosting` — which would fall back to frontend/firebase.json and whatever
+# frontend/.firebaserc's default site/project currently is — from ever
+# being the command that actually runs for a tenant deploy.
+guard_hosting_deploy_args() {
+  local expected_config="$1"
+  shift
+  local -a args=("$@")
+  local i found=0
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    if [[ "${args[$i]}" == "--config" && "${args[$((i + 1))]:-}" == "$expected_config" ]]; then
+      found=1
+      break
+    fi
+  done
+  if [[ "$found" -ne 1 ]]; then
+    log_error "Refusing to run firebase deploy: --config $expected_config is not present in the deploy command (${args[*]})."
+    log_error "This guard exists to stop a bare 'firebase deploy --only hosting' from ever running for a tenant deploy."
+    exit 1
+  fi
+}
+
 # tf_state_prefix_platform <project_id>
 platform_state_prefix() {
   printf 'platform/%s' "$1"

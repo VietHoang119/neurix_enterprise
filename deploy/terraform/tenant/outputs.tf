@@ -37,7 +37,11 @@ output "slack_signing_secret_secret_id" {
 }
 
 output "gemini_api_key_secret_id" {
-  value = google_secret_manager_secret.gemini_api_key.secret_id
+  value = local.gemini_api_key_secret_id
+}
+
+output "firebase_project_id" {
+  value = local.platform.firebase_project_id
 }
 
 output "raw_storage_bucket" {

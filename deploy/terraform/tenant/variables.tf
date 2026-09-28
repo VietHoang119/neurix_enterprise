@@ -1,10 +1,10 @@
 variable "project_id" {
-  description = "GCP project this tenant is provisioned into. Must be a brand-new, empty project — never the hand-managed production project."
+  description = "GCP project this tenant is provisioned into. Normally a brand-new, empty project — never the hand-managed production project UNLESS platform_mode = \"external\" (see platform_source.tf's production_project_guard and deploy/README.md \"Testing a tenant on the existing production platform\"). platform/ itself never allows the production project under any mode — see platform/variables.tf, which has no such carve-out."
   type        = string
 
   validation {
-    condition     = var.project_id != "neurix-enterprise"
-    error_message = "Refusing to run: 'neurix-enterprise' is the existing hand-managed production project (no Terraform state, real tenant data). This package must only ever target a fresh, empty GCP project. Pass a different -var project_id."
+    condition     = length(var.project_id) > 0
+    error_message = "project_id must not be empty."
   }
 }
 
@@ -15,8 +15,67 @@ variable "region" {
 }
 
 variable "state_bucket" {
-  description = "GCS bucket holding this project's Terraform state (same bucket as the platform stack, different prefix). Used to read the platform stack's outputs via terraform_remote_state."
+  description = "GCS bucket holding this project's Terraform state (same bucket as the platform stack, different prefix). Used to read the platform stack's outputs via terraform_remote_state when platform_mode = \"remote_state\", and to hold this tenant's own state either way."
   type        = string
+}
+
+# ---------------------------------------------------------------------------
+# External platform mode — see platform_source.tf for the full explanation.
+# These variables are only read when platform_mode = "external"; they have
+# no effect (and no validation requirement) in the default "remote_state"
+# mode, so the normal flow is unaffected by their existence.
+# ---------------------------------------------------------------------------
+variable "platform_mode" {
+  description = "How this module discovers its shared platform stack's identifiers. \"remote_state\" (default): read every platform output via terraform_remote_state — the normal flow, platform/ and tenant/ both Terraform-managed in the same project. \"external\": accept the platform's identifiers as plain external_* variables instead, and never read any platform Terraform state. See deploy/README.md \"Testing a tenant on the existing production platform\"."
+  type        = string
+  default     = "remote_state"
+
+  validation {
+    condition     = contains(["remote_state", "external"], var.platform_mode)
+    error_message = "platform_mode must be either \"remote_state\" or \"external\"."
+  }
+}
+
+variable "external_sql_instance_name" {
+  description = "Cloud SQL instance short name, e.g. \"neurix-enterprise-db\" (obtain via `gcloud sql instances list`). Required when platform_mode = \"external\"."
+  type        = string
+  default     = ""
+}
+
+variable "external_sql_instance_connection_name" {
+  description = "Cloud SQL instance connection name, PROJECT:REGION:INSTANCE, e.g. \"neurix-enterprise:asia-southeast1:neurix-enterprise-db\" (the `connectionName` field from `gcloud sql instances describe`). Required when platform_mode = \"external\"."
+  type        = string
+  default     = ""
+}
+
+variable "external_artifact_registry_repository" {
+  description = "Full Artifact Registry repository prefix to push the tenant's backend image to, REGION-docker.pkg.dev/PROJECT/REPO (an existing, already-created repository — see deploy/README.md for the read-only `gcloud artifacts repositories list` lookup). Required when platform_mode = \"external\"."
+  type        = string
+  default     = ""
+}
+
+variable "external_shared_raw_bucket_name" {
+  description = "Name of the existing shared raw-files GCS bucket. Required when platform_mode = \"external\" and dedicated_bucket = false; not read at all when dedicated_bucket = true."
+  type        = string
+  default     = ""
+}
+
+variable "external_gemini_api_key_secret_id" {
+  description = "Secret Manager secret id of an EXISTING Gemini API key secret. In external mode this module only grants this tenant's runtime service account roles/secretmanager.secretAccessor on it — it never creates, modifies, or adds a version to this secret. Required when platform_mode = \"external\"."
+  type        = string
+  default     = ""
+}
+
+variable "external_firebase_project_id" {
+  description = "Firebase project id already linked to the existing GCP project (matches project_id for a project that has already run `firebase projects:addfirebase` / has google_firebase_project applied by hand). Required when platform_mode = \"external\"."
+  type        = string
+  default     = ""
+}
+
+variable "external_cloudbuild_service_account_email" {
+  description = "Optional: email of an existing Cloud Build service account for scripts/provision.sh's migrate phase to pass to `gcloud builds submit --service-account`. Not read by any Terraform resource in this module (passed through as an output only). If left empty, provision.sh omits --service-account and the build uses the project's default Cloud Build service account instead."
+  type        = string
+  default     = ""
 }
 
 variable "tenant_id" {
@@ -102,6 +161,25 @@ variable "cloud_run_max_instances" {
 variable "raw_url_ttl_seconds" {
   type    = number
   default = 600
+}
+
+# Matches backend/core/config.py's Settings.DB_POOL_SIZE / DB_MAX_OVERFLOW
+# defaults (5 / 10, i.e. up to 15 connections per Cloud Run instance). Needs
+# to be tunable per deployment: several Cloud Run instances against one
+# shared, small Cloud SQL tier (e.g. db-g1-small on the production instance
+# in external platform mode) can exhaust max_connections long before CPU or
+# memory becomes the bottleneck — see terraform/tenants/test1.tfvars.example
+# for conservative values used there.
+variable "db_pool_size" {
+  description = "SQLAlchemy pool_size passed to the backend as DB_POOL_SIZE."
+  type        = number
+  default     = 5
+}
+
+variable "db_max_overflow" {
+  description = "SQLAlchemy max_overflow passed to the backend as DB_MAX_OVERFLOW."
+  type        = number
+  default     = 10
 }
 
 variable "labels" {

@@ -73,7 +73,13 @@ fi
 # Two most recently created revisions, newest first. Cloud Run revision
 # names are not lexically sortable by age (they include a random suffix),
 # so sort by creation timestamp, not by name.
-mapfile -t RECENT_REVISIONS < <(
+# (Read line by line instead of `mapfile`, which needs Bash 4+.)
+RECENT_REVISIONS=()
+while IFS= read -r revision_line; do
+  if [[ -n "$revision_line" ]]; then
+    RECENT_REVISIONS+=("$revision_line")
+  fi
+done < <(
   gcloud run revisions list \
     --service="$SERVICE" --project="$PROJECT_ID" --region="$REGION" \
     --sort-by="~metadata.creationTimestamp" \

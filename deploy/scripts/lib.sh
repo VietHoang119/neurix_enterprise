@@ -243,16 +243,23 @@ read_tfvar_string() {
 # read_secret <prompt> <out_var_name>
 #
 # Hidden-input read (never echoed to the terminal, never left in shell
-# history). Sets the named variable via nameref rather than printing/
-# returning the value, so a secret is never captured in $(...) output.
+# history). Assigns the value to the caller's variable <out_var_name> via
+# `printf -v` rather than printing it, so a secret is never captured in
+# $(...) output. Works on Bash 3.2 (macOS /bin/bash): no nameref (`local -n`,
+# Bash 4.3+) and no `eval`. The name is validated first, so `printf -v` can
+# only ever assign a plain variable (never an array subscript like `a[0]`).
+# Locals carry an `_rs_` prefix and that prefix is rejected for the target,
+# because `printf -v` under dynamic scoping would otherwise write into our
+# own local instead of the caller's variable if the names collided.
 read_secret() {
-  local prompt="$1"
-  local -n out_ref="$2"
-  local value
-  read -r -s -p "$prompt " value
+  local _rs_prompt="$1" _rs_name="$2" _rs_value
+  if [[ ! "$_rs_name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ || "$_rs_name" == _rs_* ]]; then
+    log_error "read_secret: invalid output variable name '$_rs_name'."
+    exit 1
+  fi
+  read -r -s -p "$_rs_prompt " _rs_value
   echo >&2
-  # shellcheck disable=SC2034  # out_ref is a nameref into the caller's variable
-  out_ref="$value"
+  printf -v "$_rs_name" '%s' "$_rs_value"
 }
 
 # gcloud_secret_add_version <project_id> <secret_id> <value>

@@ -301,6 +301,70 @@ found in testing.
 
 ## Known unknowns — verify, don't assume
 
+### Public access mode: `invoker_iam_disabled` vs `allUsers` — org-level override UNVERIFIED
+
+`terraform/tenant/cloud_run.tf`'s Cloud Run service must be reachable
+without per-caller Cloud Run IAM: Slack and the browser frontend both call
+it directly (there is no front door to gate at), and auth is enforced
+inside the app itself (Slack signature check, Firebase ID token), not at
+the Cloud Run IAM layer. `var.public_access_mode` selects which of two
+mechanisms does that:
+
+- **`"iam_check_disabled"` (default).** Sets `invoker_iam_disabled = true`
+  on `google_cloud_run_v2_service.backend` — a plain `optional` boolean
+  field on the service resource itself, equivalent to `gcloud run deploy
+  --no-invoker-iam-check`. **Confirmed against the real provider schema**,
+  not assumed: `registry.terraform.io` is blocked by this environment's
+  egress policy, so the `hashicorp/google` and `hashicorp/google-beta`
+  `8.4.0` provider binaries (`linux_amd64`) were downloaded directly from
+  `releases.hashicorp.com` into a local filesystem-mirror provider
+  installation, and `terraform providers schema -json` was run against
+  those exact binaries. `invoker_iam_disabled` shows up as a top-level
+  attribute of `google_cloud_run_v2_service` in **both** provider schemas
+  (not beta-only, contrary to the initial guess going into this pass), not
+  nested under `template`, with no `launch_stage` requirement. Because
+  disabling the check is a property of the service spec rather than an IAM
+  policy write, it is unaffected by the `iam.allowedPolicyMemberDomains`
+  org policy (Domain Restricted Sharing) that blocks granting
+  `roles/run.invoker` to `allUsers` — confirmed live against `neurix-org`:
+  `gcloud run deploy ... --allow-unauthenticated` deploys but the URL
+  returns `403`, while `gcloud run deploy ... --no-invoker-iam-check` on
+  the same project returns `200` with no org policy change needed.
+  `terraform validate` and `terraform plan` (dummy values, `platform_mode =
+  "external"` so no real GCP credentials are needed beyond a syntactically
+  valid — not necessarily authentic — service account key for provider
+  configuration) against those same real `8.4.0` binaries both confirm the
+  plan sets `invoker_iam_disabled = true` and creates no
+  `google_cloud_run_v2_service_iam_member.public_invoker` resource in this
+  mode.
+- **`"allow_unauthenticated"`.** The original mechanism: grants
+  `roles/run.invoker` to `allUsers` via
+  `google_cloud_run_v2_service_iam_member.public_invoker`. This is what
+  production's `neurix-enterprise` project already has — that binding
+  predates the org policy above, still works, and is left untouched. Use
+  this mode only on a project confirmed not to enforce
+  `iam.allowedPolicyMemberDomains` against `allUsers` (or where an org
+  admin has granted a scoped exception); do not assume every future GCP
+  project allows it, which is why it is not the default.
+
+**UNVERIFIED — a separate org-level policy could still override this.**
+Disabling the invoker IAM check is confirmed above to be a *per-service*
+setting — it lives on the Cloud Run service resource, not on any project-
+or org-level resource in the provider schema — but Google Cloud documents
+a distinct org policy constraint, `constraints/run.managed.requireInvokerIam`,
+that an org admin can set to force the invoker IAM check to stay on for
+every Cloud Run service in the org regardless of this field. Whether that
+constraint is set on `neurix-org` has **not** been checked in this pass —
+doing so needs `gcloud resource-manager org-policies describe
+constraints/run.managed.requireInvokerIam --project=PROJECT_ID --effective`
+run against a real project in that org, which this pass had no access to
+run. Terraform cannot detect this at plan time either way: setting
+`invoker_iam_disabled = true` never errors, so if that org constraint is in
+force, `apply` would silently succeed while the service still 403s to
+unauthenticated callers. If a tenant provisioned with `public_access_mode =
+"iam_check_disabled"` still returns `403` after a clean `apply`, check that
+constraint next, before assuming Terraform's part of this is broken.
+
 ### Firebase Auth Google sign-in provider
 
 **Confirmed not cleanly automatable.** Enabling the Google sign-in provider
@@ -640,7 +704,7 @@ including ones that keep production itself working):
 | `run_token_creator_self` | `google_service_account_iam_member` | this tenant's own service account |
 | `dedicated_object_admin` | `google_storage_bucket_iam_member` | this tenant's own dedicated bucket (`dedicated_bucket = true` only) |
 | `shared_object_admin_scoped_to_prefix` | `google_storage_bucket_iam_member` | **existing, shared** bucket, condition-scoped to this tenant's own `<tenant>/` prefix |
-| `public_invoker` | `google_cloud_run_v2_service_iam_member` | this tenant's own Cloud Run service |
+| `public_invoker` | `google_cloud_run_v2_service_iam_member` | this tenant's own Cloud Run service, only when `public_access_mode = "allow_unauthenticated"` |
 
 The two resources marked "existing, shared" (`gemini_api_key_accessor` in
 external mode, and `shared_object_admin_scoped_to_prefix` whenever
@@ -977,6 +1041,54 @@ actual `firebase deploy` reached a live Hosting site):
   build correctness, which is unrelated to this change and already
   exercised by the frontend repo's own build).
 
+**Public access mode (`invoker_iam_disabled` vs `allUsers`), added in this
+pass — additionally verified for real** (still without real GCP
+credentials; `registry.terraform.io` was blocked again, so the same
+filesystem-mirror workaround was rebuilt: `hashicorp/google` and
+`hashicorp/google-beta` `8.4.0` (`linux_amd64`) downloaded directly from
+`releases.hashicorp.com`, plus `hashicorp/random` `3.9.1` for the full
+module):
+
+- `terraform providers schema -json` run against those exact `8.4.0`
+  binaries (not read from documentation or memory): confirmed
+  `invoker_iam_disabled` is a top-level, `optional` boolean attribute of
+  `google_cloud_run_v2_service` in **both** the `google` and `google-beta`
+  provider schemas — not nested under `template`, not gated by
+  `launch_stage`, and not beta-only, which was the open question going into
+  this pass ("I believe it may require the google-beta provider and/or a
+  specific launch stage annotation, but confirm rather than guess"). Full
+  schema dump kept at the path this pass used locally; the specific
+  resource/attribute match is what's cited above and in "Known unknowns",
+  not a doc reference.
+- `terraform fmt -diff -check` on the edited `tenant/` module: clean.
+- `terraform init` (filesystem-mirror provider install, no
+  `registry.terraform.io` reached) + `terraform validate` against the real
+  `8.4.0`/`3.9.1` schemas: clean.
+- `terraform plan` with dummy values (`platform_mode = "external"`, a
+  syntactically well-formed but not-authentic service account key file for
+  provider configuration — sufficient for the `google`/`google-beta`
+  providers to configure without erroring, since no resource in this graph
+  requires an actual authenticated API round trip to produce a create-only
+  plan) run **twice**, once per `public_access_mode` value, using a local
+  backend override (removed afterwards, nothing committed):
+  - `public_access_mode = "iam_check_disabled"`: plan shows
+    `google_cloud_run_v2_service.backend[0]` with
+    `invoker_iam_disabled = true`, and **no**
+    `google_cloud_run_v2_service_iam_member.public_invoker` resource at
+    all (19 resources to add).
+  - `public_access_mode = "allow_unauthenticated"`: plan shows
+    `invoker_iam_disabled = false` and
+    `google_cloud_run_v2_service_iam_member.public_invoker[0]` present
+    with `member = "allUsers"`, `role = "roles/run.invoker"` (20 resources
+    to add — the one extra being that binding).
+  Both plans otherwise resolved the full resource graph identically (same
+  19 shared resources), confirming `public_access_mode` changes only the
+  public-access mechanism and nothing else.
+- **Not verified**: whether `constraints/run.managed.requireInvokerIam` is
+  set on `neurix-org` — see "Known unknowns" above. This needs a real
+  `gcloud resource-manager org-policies describe` call against a project in
+  that org, which this pass had no credentials to run.
+
 ## Judgment calls made
 
 - **Provider version**: pinned to `~> 8.4` for `google`/`google-beta` (the
@@ -997,14 +1109,36 @@ actual `firebase deploy` reached a live Hosting site):
   `<tenant>-neurix.web.app` rather than needing a Hosting site to already
   exist — this avoids a circular dependency between Cloud Run (needs
   `FRONTEND_URL` for CORS) and Hosting (created in the same Terraform phase).
-- **Cloud Run ingress**: left at `INGRESS_TRAFFIC_ALL` with a public
-  `allUsers` invoker binding (per the handoff — Slack and browsers call it
-  directly, auth is enforced inside the app). `allow_unauthenticated` is a
-  variable so this can be turned off if a project's org policy blocks public
-  `allUsers` bindings (Domain Restricted Sharing — see
-  `docs/DEPLOYMENT_RUNBOOK.md` step 11 gotcha #2 for the manual, time-boxed
-  override procedure; Terraform can't do that override safely, it's
-  deliberately a human-in-the-loop action).
+- **Cloud Run ingress**: left at `INGRESS_TRAFFIC_ALL` — Slack and browsers
+  call the service directly, auth is enforced inside the app, not at Cloud
+  Run's IAM layer.
+- **Public access mechanism: `invoker_iam_disabled` by default, not
+  `allUsers`** (this pass; supersedes the original single
+  `allow_unauthenticated` boolean). The original design granted
+  `roles/run.invoker` to `allUsers` unconditionally whenever
+  `allow_unauthenticated = true` (default), pointing at
+  `docs/DEPLOYMENT_RUNBOOK.md` step 11 gotcha #2's manual, time-boxed org
+  policy override for a project enforcing Domain Restricted Sharing
+  (`iam.allowedPolicyMemberDomains`). That override is real friction (org
+  admin permissions, a multi-minute propagation wait, a binding that must
+  be applied and then the policy immediately reverted) for something that
+  turns out not to need it: `google_cloud_run_v2_service.invoker_iam_disabled`
+  disables Cloud Run's own invoker IAM check as a property of the service
+  spec, not an IAM policy write, so it is never subject to that org policy
+  in the first place — confirmed live (`--allow-unauthenticated` deploys
+  but 403s; `--no-invoker-iam-check` deploys and 200s, both against the
+  same `neurix-org`-governed project, no policy change either way) and
+  confirmed present in the real, pinned `~> 8.4` provider schema for both
+  `google` and `google-beta` (see "Known unknowns" → "Public access mode").
+  `public_access_mode` ("iam_check_disabled" default, or
+  "allow_unauthenticated") replaces the old boolean; the `allUsers` path
+  stays available (production's own `neurix-enterprise` binding pre-dates
+  and is unaffected by this change) for a project where an org policy
+  requires it or a future project's policy allows `allUsers` but not this
+  field. See "Known unknowns" above for the one thing this pass could not
+  verify — whether a separate org policy
+  (`constraints/run.managed.requireInvokerIam`) is set on `neurix-org` that
+  could still force the check on regardless of this field.
 - **`tenant_id` length cap (15 chars)**: not stated in the handoff; derived
   from the 30-character GCP service-account `account_id` limit combined with
   the `neurix-<tenant>-run` naming convention.
@@ -1181,3 +1315,13 @@ actual `firebase deploy` reached a live Hosting site):
    recording, the password-caching bug found and fixed while testing) with
    stub `gcloud` and a stub migration runner (see "Verification" above);
    no real GCP credentials or Postgres instance were available here.
+9. Whether `constraints/run.managed.requireInvokerIam` is set at the
+   `neurix-org` level — see "Known unknowns" → "Public access mode". If it
+   is, `public_access_mode = "iam_check_disabled"` would `apply` cleanly
+   but the resulting service would still 403 unauthenticated callers, since
+   that org policy overrides the per-service `invoker_iam_disabled` field
+   and Terraform has no way to detect it at plan time. Worth checking once,
+   with `gcloud resource-manager org-policies describe
+   constraints/run.managed.requireInvokerIam --project=PROJECT_ID
+   --effective` against any project in that org, before relying on this
+   mode for a real tenant.

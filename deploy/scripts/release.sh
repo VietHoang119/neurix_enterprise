@@ -28,7 +28,8 @@
 # Usage:
 #   release.sh --project-id ID --state-bucket BUCKET [--region REGION]
 #              [--image-tag TAG] [--sql-instance-name NAME] [--ar-repo-id ID]
-#              [--cloudbuild-service-account EMAIL] [--sql-root-secret NAME]
+#              [--cloudbuild-service-account EMAIL] [--build-staging-bucket NAME]
+#              [--sql-root-secret NAME]
 #              [--tenants-file FILE] [TENANT ...]
 #
 # Tenants are rolled out ONE AT A TIME, IN THE ORDER GIVEN — the first
@@ -77,6 +78,7 @@ IMAGE_TAG=""
 SQL_INSTANCE_NAME="neurix-db"          # must match terraform/platform/variables.tf's sql_instance_name default
 AR_REPO_ID="neurix-backend"            # must match terraform/platform/variables.tf's artifact_registry_repository_id default
 CLOUDBUILD_SA=""                       # default computed below once PROJECT_ID is known
+BUILD_STAGING_BUCKET=""                # default computed below; must match terraform/platform/main.tf's build_staging bucket name
 SQL_ROOT_SECRET="sql-root-password"    # must match terraform/platform/main.tf's google_secret_manager_secret.sql_root_password secret_id
 TENANTS_FILE=""
 TENANTS=()
@@ -90,10 +92,11 @@ while [[ $# -gt 0 ]]; do
     --sql-instance-name) SQL_INSTANCE_NAME="$2"; shift 2 ;;
     --ar-repo-id) AR_REPO_ID="$2"; shift 2 ;;
     --cloudbuild-service-account) CLOUDBUILD_SA="$2"; shift 2 ;;
+    --build-staging-bucket) BUILD_STAGING_BUCKET="$2"; shift 2 ;;
     --sql-root-secret) SQL_ROOT_SECRET="$2"; shift 2 ;;
     --tenants-file) TENANTS_FILE="$2"; shift 2 ;;
     -h|--help)
-      sed -n '2,61p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+      sed -n '2,62p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     --) shift; break ;;
@@ -139,6 +142,10 @@ if [[ -z "$CLOUDBUILD_SA" ]]; then
   CLOUDBUILD_SA="neurix-cloudbuild@${PROJECT_ID}.iam.gserviceaccount.com"
 fi
 
+if [[ -z "$BUILD_STAGING_BUCKET" ]]; then
+  BUILD_STAGING_BUCKET="${PROJECT_ID}-build-staging"
+fi
+
 if [[ -z "$IMAGE_TAG" ]]; then
   IMAGE_TAG="$(cd "$REPO_ROOT" && git rev-parse --short HEAD)"
 fi
@@ -169,11 +176,7 @@ AR_REPO="${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO_ID}"
 IMAGE="${AR_REPO}/backend:${IMAGE_TAG}"
 
 log_info "=== Building and pushing $IMAGE ==="
-gcloud builds submit "$REPO_ROOT/backend" \
-  --project="$PROJECT_ID" \
-  --tag="$IMAGE" \
-  --gcs-log-dir="gs://${PROJECT_ID}_cloudbuild/logs" \
-  --service-account="projects/$PROJECT_ID/serviceAccounts/$CLOUDBUILD_SA"
+build_backend_image "$PROJECT_ID" "$REPO_ROOT/backend" "$IMAGE" "$CLOUDBUILD_SA" "$BUILD_STAGING_BUCKET"
 log_info "Image built: $IMAGE"
 
 # ---------------------------------------------------------------------------

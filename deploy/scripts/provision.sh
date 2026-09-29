@@ -262,10 +262,11 @@ phase_migrate() {
   # Terraform state for production).
   init_tenant >/dev/null
 
-  local instance_connection_name db_name db_app_user ar_repo cloudbuild_sa
+  local instance_connection_name db_name db_app_user ar_repo cloudbuild_sa build_staging_bucket
   instance_connection_name="$(tf_tenant output -raw sql_instance_connection_name)"
   ar_repo="$(tf_tenant output -raw artifact_registry_repository)"
   cloudbuild_sa="$(tf_tenant output -raw cloudbuild_service_account_email)"
+  build_staging_bucket="$(tf_tenant output -raw build_staging_bucket_name)"
   db_name="$(tf_tenant output -raw db_name)"
   db_app_user="$(tf_tenant output -raw db_user)"
 
@@ -311,18 +312,7 @@ phase_migrate() {
   image="${ar_repo}/backend:${image_tag}"
 
   log_info "Building and pushing $image via Cloud Build..."
-  local -a build_args=(
-    "$REPO_ROOT/backend"
-    --project="$PROJECT_ID"
-    --tag="$image"
-    --gcs-log-dir="gs://${PROJECT_ID}_cloudbuild/logs"
-  )
-  if [[ -n "$cloudbuild_sa" ]]; then
-    build_args+=(--service-account="projects/$PROJECT_ID/serviceAccounts/$cloudbuild_sa")
-  else
-    log_warn "No Cloud Build service account known (external platform mode with external_cloudbuild_service_account_email unset) — using the project's default Cloud Build service account instead."
-  fi
-  gcloud builds submit "${build_args[@]}"
+  build_backend_image "$PROJECT_ID" "$REPO_ROOT/backend" "$image" "$cloudbuild_sa" "$build_staging_bucket"
 
   echo "$image" > "$IMAGE_STATE_FILE"
   log_info "Image built: $image"

@@ -29,6 +29,11 @@ output "cloudbuild_service_account_email" {
   value = google_service_account.cloudbuild.email
 }
 
+output "build_staging_bucket_name" {
+  description = "Cloud Build source-staging bucket (name only, no gs:// prefix) — scripts pass gs://<name>/source as --gcs-source-staging-dir."
+  value       = google_storage_bucket.build_staging.name
+}
+
 output "shared_raw_bucket_name" {
   value = google_storage_bucket.shared_raw.name
 }

@@ -34,6 +34,7 @@ locals {
     sql_root_password_secret_id      = data.terraform_remote_state.platform[0].outputs.sql_root_password_secret_id
     artifact_registry_repository     = data.terraform_remote_state.platform[0].outputs.artifact_registry_repository
     cloudbuild_service_account_email = data.terraform_remote_state.platform[0].outputs.cloudbuild_service_account_email
+    build_staging_bucket_name        = data.terraform_remote_state.platform[0].outputs.build_staging_bucket_name
     shared_raw_bucket_name           = data.terraform_remote_state.platform[0].outputs.shared_raw_bucket_name
     firebase_project_id              = data.terraform_remote_state.platform[0].outputs.firebase_project_id
     } : {
@@ -49,6 +50,7 @@ locals {
     sql_root_password_secret_id      = ""
     artifact_registry_repository     = var.external_artifact_registry_repository
     cloudbuild_service_account_email = var.external_cloudbuild_service_account_email
+    build_staging_bucket_name        = var.external_build_staging_bucket
     shared_raw_bucket_name           = var.external_shared_raw_bucket_name
     firebase_project_id              = var.external_firebase_project_id
   }

@@ -78,6 +78,12 @@ variable "external_cloudbuild_service_account_email" {
   default     = ""
 }
 
+variable "external_build_staging_bucket" {
+  description = "Optional: name (no gs:// prefix) of an existing Cloud Build source-staging bucket for scripts/provision.sh's migrate phase to pass as --gcs-source-staging-dir=gs://<name>/source. Not read by any Terraform resource in this module (passed through as an output only). Production does not have the dedicated bucket platform/ creates; if left empty, provision.sh omits --gcs-source-staging-dir and requests CLOUD_LOGGING_ONLY against the project's default bucket (untested with a custom service account — see deploy/README.md)."
+  type        = string
+  default     = ""
+}
+
 variable "tenant_id" {
   description = "Short, stable, lowercase slug identifying this tenant (e.g. \"acme\"). Used verbatim in resource names (database, service account, secrets, Cloud Run service, Hosting site) and as the app's TENANT_ID env var / raw-storage path prefix."
   type        = string

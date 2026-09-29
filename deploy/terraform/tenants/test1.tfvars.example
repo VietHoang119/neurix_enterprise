@@ -39,6 +39,9 @@ external_firebase_project_id          = "neurix-enterprise"
 # Optional — leave unset to use the project's default Cloud Build service
 # account instead (see scripts/provision.sh's migrate phase).
 external_cloudbuild_service_account_email = ""
+# Optional — Cloud Build source-staging bucket (name only). Production does
+# not have one; leave unset to fall back to the project's default bucket.
+external_build_staging_bucket = ""
 
 # Leave enable_app at its default (false) for Terraform phase 1. Pass
 # -var enable_app=true -var backend_image=... -var frontend_url=...

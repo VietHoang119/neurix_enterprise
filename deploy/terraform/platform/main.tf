@@ -8,6 +8,8 @@ locals {
   # this project — derive a default from project_id when the caller didn't
   # pin one explicitly.
   shared_raw_bucket_name = var.shared_raw_bucket_name != "" ? var.shared_raw_bucket_name : "${var.project_id}-neurix-raw"
+
+  build_staging_bucket_name = "${var.project_id}-build-staging"
 }
 
 # ---------------------------------------------------------------------------
@@ -149,6 +151,42 @@ resource "google_project_iam_member" "cloudbuild_storage_viewer" {
   project = var.project_id
   role    = "roles/storage.objectViewer"
   member  = "serviceAccount:${google_service_account.cloudbuild.email}"
+}
+
+# ---------------------------------------------------------------------------
+# Dedicated source-staging bucket for `gcloud builds submit`. Cloud Build
+# refuses to use the project's default auto-created `PROJECT_ID_cloudbuild`
+# bucket when a non-default service account is specified for the build,
+# regardless of IAM grants on that bucket (confirmed live on neurix-org), so
+# scripts pass `--gcs-source-staging-dir=gs://<this bucket>/source` instead.
+# Source archives are throwaway, so they expire after 30 days.
+# ---------------------------------------------------------------------------
+resource "google_storage_bucket" "build_staging" {
+  project                     = var.project_id
+  name                        = local.build_staging_bucket_name
+  location                    = var.region
+  uniform_bucket_level_access = true
+  public_access_prevention    = "enforced"
+  force_destroy               = true
+
+  lifecycle_rule {
+    condition {
+      age = 30
+    }
+    action {
+      type = "Delete"
+    }
+  }
+
+  labels     = local.labels
+  depends_on = [google_project_service.apis]
+}
+
+resource "google_storage_bucket_iam_member" "cloudbuild_staging_object_admin" {
+  # Uploads the source archive and reads it back during the build.
+  bucket = google_storage_bucket.build_staging.name
+  role   = "roles/storage.objectAdmin"
+  member = "serviceAccount:${google_service_account.cloudbuild.email}"
 }
 
 # ---------------------------------------------------------------------------

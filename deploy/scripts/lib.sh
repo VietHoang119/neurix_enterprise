@@ -347,3 +347,55 @@ platform_state_prefix() {
 tenant_state_prefix() {
   printf 'tenants/%s/%s' "$1" "$2"
 }
+
+# build_backend_image <project_id> <source_dir> <image> <cloudbuild_sa> <staging_bucket>
+#
+# Builds <source_dir>/Dockerfile via Cloud Build and pushes <image>.
+# <cloudbuild_sa> (email) and <staging_bucket> (name only) may be empty.
+#
+# Why a generated config instead of `gcloud builds submit --tag`:
+#   - When a custom service account is used, Cloud Build requires an explicit
+#     logging destination; the only way to set one that needs no extra bucket
+#     is `options.logging: CLOUD_LOGGING_ONLY`, which has no CLI flag
+#     (`--suppress-logs` does NOT satisfy it — confirmed live).
+#   - Cloud Build also refuses the project's default `PROJECT_ID_cloudbuild`
+#     staging bucket with a custom service account, so the dedicated bucket
+#     from terraform/platform is passed via --gcs-source-staging-dir.
+build_backend_image() {
+  local project_id="$1" source_dir="$2" image="$3" sa_email="$4" staging_bucket="$5"
+  local config
+  config="$(mktemp "${TMPDIR:-/tmp}/neurix-cloudbuild.XXXXXX")"
+  # Removed by traps inside a subshell below, so the caller's own
+  # EXIT/INT/TERM traps are neither replaced nor lost.
+  cat > "$config" <<YAML
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ['build', '-t', '${image}', '.']
+images:
+  - '${image}'
+options:
+  logging: CLOUD_LOGGING_ONLY
+YAML
+
+  local -a args=("$source_dir" --project="$project_id" --config="$config")
+  if [[ -n "$staging_bucket" ]]; then
+    args+=(--gcs-source-staging-dir="gs://${staging_bucket}/source")
+  else
+    log_warn "No Cloud Build staging bucket known — using gcloud's default staging bucket (fails with a custom service account: see terraform/platform's build_staging bucket)."
+  fi
+  if [[ -n "$sa_email" ]]; then
+    args+=(--service-account="projects/${project_id}/serviceAccounts/${sa_email}")
+  else
+    log_warn "No Cloud Build service account known — using the project's default Cloud Build service account."
+  fi
+
+  (
+    # shellcheck disable=SC2064  # expand $config now, on purpose
+    trap "rm -f '$config'" EXIT
+    # shellcheck disable=SC2064
+    trap "rm -f '$config'; exit 130" INT
+    # shellcheck disable=SC2064
+    trap "rm -f '$config'; exit 143" TERM
+    gcloud builds submit "${args[@]}"
+  )
+}

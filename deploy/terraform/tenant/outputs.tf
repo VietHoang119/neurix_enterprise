@@ -56,6 +56,11 @@ output "cloudbuild_service_account_email" {
   value = local.platform.cloudbuild_service_account_email
 }
 
+output "build_staging_bucket_name" {
+  description = "Cloud Build source-staging bucket name; empty in external mode when external_build_staging_bucket is unset."
+  value       = local.platform.build_staging_bucket_name
+}
+
 output "cloud_run_url" {
   value = var.enable_app ? google_cloud_run_v2_service.backend[0].uri : null
 }

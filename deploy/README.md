@@ -573,6 +573,36 @@ gcloud firebase projects list --format='value(projectId)' | grep neurix-enterpri
 gcloud iam service-accounts list --project=neurix-enterprise --format='value(email)' | grep -i cloudbuild
 ```
 
+#### Cloud Build staging bucket (production gap)
+
+`scripts/provision.sh migrate` (and `release.sh`) build the image through
+`build_backend_image` in `scripts/lib.sh`, which passes
+`--gcs-source-staging-dir=gs://<bucket>/source` and a generated build config
+with `options.logging: CLOUD_LOGGING_ONLY`. Both are needed when a custom
+Cloud Build service account is used: Cloud Build rejects the project's
+default `PROJECT_ID_cloudbuild` bucket in that case, and requires an explicit
+logging destination. Non-production projects get the bucket
+(`PROJECT_ID-build-staging`) from `terraform/platform`.
+
+**Production does not have this bucket** — `platform/` was never applied
+there. In external mode, either:
+
+- create one by hand and set `external_build_staging_bucket` (name only):
+
+  ```bash
+  gcloud storage buckets create gs://neurix-enterprise-build-staging \
+    --project=neurix-enterprise --location=asia-southeast1 \
+    --uniform-bucket-level-access
+  gcloud storage buckets add-iam-policy-binding gs://neurix-enterprise-build-staging \
+    --member=serviceAccount:<cloud-build-sa-email> --role=roles/storage.objectAdmin
+  ```
+
+- or leave it unset: `migrate` then omits `--gcs-source-staging-dir` and only
+  requests `CLOUD_LOGGING_ONLY` against the project's default bucket.
+  **Untested.** That works only if the build uses the project's default Cloud
+  Build service account (`external_cloudbuild_service_account_email` unset);
+  with a custom service account the default bucket was confirmed to fail.
+
 ### 3. Set up the test tenant's tfvars
 
 ```bash

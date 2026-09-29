@@ -11,9 +11,12 @@
 #      the tenant if you like.
 #   2. IMPORTANT — do this step BEFORE creating the app: the
 #      slash_commands.url and oauth_config.redirect_urls below are
-#      placeholders (REPLACE_WITH_CLOUD_RUN_URL). Slack does not actively
-#      verify these at creation time, so the app can be created with
-#      placeholders and fixed up afterwards — but do NOT add an
+#      placeholders (host replace-with-cloud-run-url.example.com — a
+#      syntactically valid hostname; underscores are NOT valid in DNS
+#      hostnames and make Slack reject the manifest with "We can't translate
+#      a manifest with errors"). Slack does not actively verify these at
+#      creation time, so the app can be created with placeholders and
+#      fixed up afterwards — but do NOT add an
 #      `event_subscriptions` block yet (see step 4): Slack DOES actively
 #      verify an Event Subscriptions request_url with a live challenge/
 #      response the moment you try to save one, and the Cloud Run service
@@ -55,7 +58,7 @@ features:
 
   slash_commands:
     - command: /neurix
-      url: https://REPLACE_WITH_CLOUD_RUN_URL/slack/commands
+      url: https://replace-with-cloud-run-url.example.com/slack/commands
       description: Save, ask, and manage your Neurix second brain from Slack
       usage_hint: "ask <question> | file | raw-access"
       should_escape: false
@@ -66,7 +69,7 @@ oauth_config:
   # see docs/DEPLOYMENT_RUNBOOK.md step 16). Not required for a single
   # manual install via "Install to Workspace"; remove this block if unused.
   redirect_urls:
-    - https://REPLACE_WITH_CLOUD_RUN_URL/slack/oauth/callback
+    - https://replace-with-cloud-run-url.example.com/slack/oauth/callback
   scopes:
     bot:
       - commands
@@ -80,13 +83,13 @@ oauth_config:
 settings:
   interactivity:
     is_enabled: true
-    request_url: https://REPLACE_WITH_CLOUD_RUN_URL/slack/interactions
+    request_url: https://replace-with-cloud-run-url.example.com/slack/interactions
 
   # Add this block yourself, in the Slack UI, only once the Cloud Run URL is
   # real and reachable (see step 2/4 above) — Slack verifies it live:
   #
   # event_subscriptions:
-  #   request_url: https://REPLACE_WITH_CLOUD_RUN_URL/slack/events
+  #   request_url: https://replace-with-cloud-run-url.example.com/slack/events
   #   bot_events:
   #     - message.im
   #     - file_shared

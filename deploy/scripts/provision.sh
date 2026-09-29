@@ -335,8 +335,10 @@ MANUAL STEP — do this in the Slack UI now:
   2. Pick the workspace for tenant '$TENANT_ID'.
   3. Paste the contents of deploy/slack/slack-manifest.yml as the manifest
      template (adjust the display name for this tenant if you like — the
-     manifest's URLs are placeholders; you'll fill in the real Cloud Run
-     URLs after phase 5, once the backend is deployed).
+     manifest's URLs use the fake host
+     'replace-with-cloud-run-url.example.com' as a placeholder; you'll
+     replace it with the real Cloud Run host after phase 5, once the
+     backend is deployed).
   4. Create the app, then install it to the workspace.
   5. Go to "OAuth & Permissions" and copy the Bot User OAuth Token
      (starts with xoxb-).

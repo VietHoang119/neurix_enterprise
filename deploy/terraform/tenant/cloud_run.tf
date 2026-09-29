@@ -17,6 +17,18 @@ resource "google_cloud_run_v2_service" "backend" {
 
   labels = local.labels
 
+  # Disables Cloud Run's own invoker-IAM check on this service
+  # (google_cloud_run_v2_service.invoker_iam_disabled — confirmed present
+  # on this resource in both the pinned hashicorp/google and
+  # hashicorp/google-beta ~> 8.4 provider schemas, not beta-only; equivalent
+  # to `gcloud run deploy --no-invoker-iam-check`). This is a property of
+  # the service itself, not an IAM policy write, so it is unaffected by the
+  # iam.allowedPolicyMemberDomains org policy that blocks the allUsers
+  # binding below. See deploy/README.md "Public access mode" for how this
+  # was verified and var.public_access_mode's description for the
+  # allow_unauthenticated fallback.
+  invoker_iam_disabled = var.public_access_mode == "iam_check_disabled"
+
   template {
     service_account = google_service_account.run.email
 
@@ -181,8 +193,13 @@ resource "google_cloud_run_v2_service" "backend" {
   ]
 }
 
+# Only created in "allow_unauthenticated" mode — see var.public_access_mode.
+# The default mode ("iam_check_disabled") makes the service public via the
+# invoker_iam_disabled field above instead, with no allUsers IAM binding at
+# all, which is what a project enforcing iam.allowedPolicyMemberDomains
+# (Domain Restricted Sharing) requires.
 resource "google_cloud_run_v2_service_iam_member" "public_invoker" {
-  count = var.enable_app && var.allow_unauthenticated ? 1 : 0
+  count = var.enable_app && var.public_access_mode == "allow_unauthenticated" ? 1 : 0
 
   project  = var.project_id
   location = var.region

@@ -82,6 +82,11 @@ versions or the backend type, change all three copies together.
 
 ## Prerequisites
 
+- **Bash 3.2 or newer.** Every script in `deploy/scripts/` is written to run
+  on the stock macOS `/bin/bash` (3.2), so no Homebrew Bash is needed. Keep
+  it that way: no `local -n`/`declare -n`, `declare -A`, `mapfile`/`readarray`,
+  `${var,,}`/`${var^^}`, or `wait -n`, and don't expand a possibly-empty
+  array as `"${arr[@]}"` under `set -u`.
 - Terraform >= 1.6, a `google` CLI (`gcloud`, authenticated:
   `gcloud auth login` + `gcloud auth application-default login`), `python3`,
   `npm`, and `firebase-tools` (via `npx firebase-tools`, no global install

@@ -322,7 +322,12 @@ rollout_tenant() {
 }
 
 for ((i = 0; i < ${#TENANTS[@]}; i++)); do
-  REMAINING_TENANTS=("${TENANTS[@]:$((i + 1))}")
+  # Built with a loop, not "${TENANTS[@]:$((i + 1))}": under `set -u`, Bash
+  # < 4.4 (macOS 3.2) treats an empty array expansion as an unbound variable.
+  REMAINING_TENANTS=()
+  for ((j = i + 1; j < ${#TENANTS[@]}; j++)); do
+    REMAINING_TENANTS+=("${TENANTS[$j]}")
+  done
   rollout_tenant "${TENANTS[$i]}"
 done
 

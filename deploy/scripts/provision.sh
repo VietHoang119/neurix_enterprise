@@ -399,10 +399,25 @@ phase_app() {
   # Firebase Hosting site URLs are deterministic (https://<site-id>.web.app),
   # so FRONTEND_URL for Cloud Run's CORS can be computed up front — it does
   # not need the Hosting site to exist yet, breaking what would otherwise be
-  # a circular dependency between Cloud Run and Hosting.
-  local frontend_url="https://${TENANT_ID}-neurix.web.app"
-
+  # a circular dependency between Cloud Run and Hosting. The site id itself
+  # (computed default, or the hosting_site_id override from the tfvars) is
+  # evaluated by Terraform (`terraform console`, so it always reflects the
+  # current tfvars, not stale state) so there is exactly one place that
+  # decides it.
   init_tenant >/dev/null
+  local planned_site_id
+  planned_site_id="$(printf 'local.hosting_site_id\n' | tf_tenant console \
+    -var-file="$TFVARS" \
+    -var="project_id=$PROJECT_ID" \
+    -var="region=$REGION" \
+    -var="state_bucket=$STATE_BUCKET" \
+    -var="tenant_id=$TENANT_ID" 2>/dev/null | tr -d '"[:space:]' || true)"
+  if [[ ! "$planned_site_id" =~ ^[a-z0-9][a-z0-9-]{2,28}[a-z0-9]$ ]]; then
+    log_error "Could not evaluate the Hosting site id via 'terraform console' (got: '${planned_site_id}')."
+    exit 1
+  fi
+  local frontend_url="https://${planned_site_id}.web.app"
+
   tf_tenant_apply \
     -var-file="$TFVARS" \
     -var="project_id=$PROJECT_ID" \

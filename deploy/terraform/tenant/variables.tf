@@ -94,6 +94,17 @@ variable "tenant_id" {
   }
 }
 
+variable "hosting_site_id" {
+  description = "Optional override for the Firebase Hosting site ID (becomes https://<id>.web.app). Empty (default) uses the computed \"<tenant_id>-<8-hex-of-sha256(project_id)>\". Hosting site IDs are globally unique across all of Firebase, so set this by hand if the computed default collides (Firebase reports that as a generic `Invalid name` error). 4-30 chars, lowercase letters/digits/hyphens, not starting or ending with a hyphen. Immutable once created — changing it later replaces the site. See deploy/README.md \"Firebase Hosting site ID collisions\"."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.hosting_site_id == "" || can(regex("^[a-z0-9][a-z0-9-]{2,28}[a-z0-9]$", var.hosting_site_id))
+    error_message = "hosting_site_id must be empty (use the computed default) or 4-30 characters of lowercase letters, digits and hyphens, not starting or ending with a hyphen."
+  }
+}
+
 variable "dedicated_bucket" {
   description = "When true, create a dedicated neurix-raw-<tenant> bucket for this tenant instead of using the shared platform bucket with an IAM-condition-scoped prefix grant. See deploy/README.md \"Known unknowns\" for the unverified isolation caveat on the shared-bucket path."
   type        = bool

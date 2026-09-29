@@ -370,6 +370,71 @@ unauthenticated callers. If a tenant provisioned with `public_access_mode =
 "iam_check_disabled"` still returns `403` after a clean `apply`, check that
 constraint next, before assuming Terraform's part of this is broken.
 
+### Firebase Hosting site ID collisions
+
+**Confirmed live (failure); the fix is UNVERIFIED live.** Hosting site IDs
+are **globally unique across all of Firebase, not just this project** — the
+ID becomes `https://<site-id>.web.app`. Provisioning tenant `demo` on
+`neurix-org` with the old hardcoded `"${tenant_id}-neurix"` scheme failed
+with:
+
+```
+Error creating Site: googleapi: Error 400: Invalid name: `demo-neurix` is invalid; try something like `fir-neurix` instead
+```
+
+The same error came from `npx firebase-tools hosting:sites:create demo-neurix
+--project neurix-org`. Google appears to report "already taken by someone
+else" and "malformed name" with the same generic `Invalid name`, so a
+collision looks like a syntax error even though the name is well-formed.
+
+**New default:** `terraform/tenant/hosting.tf` now uses
+`<tenant_id>-<first 8 hex chars of sha256(project_id)>` (e.g.
+`acme-1a2b3c4d`). The project id is globally unique, so the same tenant id in
+different projects gets different site IDs. A hash is used instead of
+`"<project_id>-<tenant_id>"` because that concatenation can reach 46
+characters (30-char project id + 15-char tenant id + hyphen) against
+Firebase's 30-character limit, and truncating it would silently drop project
+or tenant identity. The hashed form is at most 15 + 1 + 8 = 24 characters by
+construction, so it never needs truncating. It is deterministic (stable
+across plans) and lowercase `[a-z0-9-]`.
+
+**This reduces collision risk; it does not eliminate it.** The choice is a
+reasonable-but-unverified improvement, not one based on a measured collision
+rate: Firebase exposes no public availability check, so whether a specific
+string is free can only be learned by trying to create it. That is why the
+override exists.
+
+**Recovery if a site ID still collides** (`Invalid name` from
+`google_firebase_hosting_site`):
+
+1. Set `hosting_site_id = "<your-choice>"` in the tenant's tfvars (4–30
+   chars, lowercase letters/digits/hyphens, not starting or ending with a
+   hyphen) and re-run `scripts/provision.sh app`. The override replaces the
+   computed default entirely; `frontend_url`/CORS follow it automatically.
+   Pick something project-specific, not a bare common word.
+2. *(Documented only, not automated.)* If a site with the desired ID was
+   already created by hand while diagnosing (e.g. via
+   `firebase hosting:sites:create`), adopt it instead of recreating it:
+   `terraform -chdir=terraform/tenant import -var-file=... -var enable_app=true
+   -var backend_image=... -var frontend_url=... 'google_firebase_hosting_site.tenant[0]'
+   projects/<project_id>/sites/<site_id>` (with `hosting_site_id` set to that
+   same ID so the plan matches), then re-run `app`. Verify the import ID
+   format against your pinned provider version's docs before relying on it.
+
+Site IDs are immutable: changing `hosting_site_id` (or `project_id`/`tenant_id`
+under the computed default) on a tenant whose site already exists makes
+Terraform replace the site — the old `*.web.app` URL stops serving.
+Tenants already provisioned with the old `<tenant>-neurix` name will see this
+replacement in `plan`; pin them with `hosting_site_id = "<tenant>-neurix"` to
+keep their existing site.
+
+Verified offline: `terraform fmt`, `validate` (real `google`/`google-beta`
+8.4.0 schemas) and `plan` with dummy values in both modes — `hosting_site_id`
+unset shows the computed default in `site_id`, set shows the override exactly;
+a maximum-length tenant id (15 chars) plus a 30-char project id yields 24
+characters. Still needs a live re-confirmation: that the new default actually
+provisions on `neurix-org` (no GCP access here, so no real `apply`).
+
 ### Firebase Auth Google sign-in provider
 
 **Confirmed not cleanly automatable.** Enabling the Google sign-in provider
@@ -777,7 +842,7 @@ running.
   mode; it stays genuinely untested by this package until `platform/` is
   applied for real on a throwaway project (the normal flow).
 - **Firebase Auth authorized domains** for a brand-new Hosting site
-  (`test1-neurix.web.app`) created under the same, already-in-use Firebase
+  (`<hosting-site-id>.web.app`; see "Firebase Hosting site ID collisions") created under the same, already-in-use Firebase
   project. Firebase Auth restricts sign-in by authorized domain; whether a
   new Hosting site's domain needs to be added by hand to the existing
   project's authorized-domains list (Firebase Console → Authentication →
@@ -1141,7 +1206,7 @@ module):
 - **`FRONTEND_URL` / Hosting-Cloud-Run ordering**: Firebase Hosting site
   URLs are deterministic (`https://<site-id>.web.app`), so
   `scripts/provision.sh app` computes `frontend_url` up front from
-  `<tenant>-neurix.web.app` rather than needing a Hosting site to already
+  the Hosting site id (evaluated via `terraform console`, so it honors a `hosting_site_id` override) rather than needing a Hosting site to already
   exist — this avoids a circular dependency between Cloud Run (needs
   `FRONTEND_URL` for CORS) and Hosting (created in the same Terraform phase).
 - **Cloud Run ingress**: left at `INGRESS_TRAFFIC_ALL` — Slack and browsers

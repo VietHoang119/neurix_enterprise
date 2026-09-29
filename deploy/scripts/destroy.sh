@@ -126,6 +126,17 @@ destroy_tenant() {
     fi
   fi
 
+  # frontend_url only needs to be non-empty for destroy (it is just Cloud
+  # Run's CORS env var on a service being deleted); prefer the real value.
+  local planned_site_id
+  planned_site_id="$(printf 'local.hosting_site_id\n' | terraform -chdir="$TF_DIR/tenant" console \
+    -var-file="$TFVARS" \
+    -var="project_id=$PROJECT_ID" \
+    -var="region=$REGION" \
+    -var="state_bucket=$STATE_BUCKET" \
+    -var="tenant_id=$TENANT_ID" 2>/dev/null | tr -d '"[:space:]' || true)"
+  [[ -n "$planned_site_id" ]] || planned_site_id="unknown-site"
+
   terraform -chdir="$TF_DIR/tenant" destroy -input=false \
     -var-file="$TFVARS" \
     -var="project_id=$PROJECT_ID" \
@@ -134,7 +145,7 @@ destroy_tenant() {
     -var="tenant_id=$TENANT_ID" \
     -var="enable_app=true" \
     -var="backend_image=placeholder" \
-    -var="frontend_url=https://${TENANT_ID}-neurix.web.app"
+    -var="frontend_url=https://${planned_site_id}.web.app"
 
   log_info "Tenant '$TENANT_ID' destroyed."
   log_warn "Secret Manager secrets were deleted by Terraform, but this does NOT remove:"

@@ -117,6 +117,12 @@ variable "enable_app" {
   default     = false
 }
 
+variable "cloud_run_deletion_protection" {
+  description = "Cloud Run service deletion_protection. Left on by default so a stray `terraform apply` can never silently drop the service; scripts/destroy.sh explicitly disables it (via -var, never by editing this default) before tearing a tenant down."
+  type        = bool
+  default     = true
+}
+
 variable "backend_image" {
   description = "Full Artifact Registry image reference (e.g. REGION-docker.pkg.dev/PROJECT/REPO/backend:TAG) to deploy to Cloud Run. Required when enable_app = true; ignored otherwise."
   type        = string

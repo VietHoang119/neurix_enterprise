@@ -17,6 +17,11 @@ resource "google_cloud_run_v2_service" "backend" {
 
   labels = local.labels
 
+  # Provider default is true as well; set explicitly so the destroy flow's
+  # override (scripts/destroy.sh passes -var cloud_run_deletion_protection=false
+  # for the duration of a tenant destroy only) is visible next to the resource.
+  deletion_protection = var.cloud_run_deletion_protection
+
   # Disables Cloud Run's own invoker-IAM check on this service
   # (google_cloud_run_v2_service.invoker_iam_disabled — confirmed present
   # on this resource in both the pinned hashicorp/google and

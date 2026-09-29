@@ -137,15 +137,38 @@ destroy_tenant() {
     -var="tenant_id=$TENANT_ID" 2>/dev/null | tr -d '"[:space:]' || true)"
   [[ -n "$planned_site_id" ]] || planned_site_id="unknown-site"
 
-  terraform -chdir="$TF_DIR/tenant" destroy -input=false \
-    -var-file="$TFVARS" \
-    -var="project_id=$PROJECT_ID" \
-    -var="region=$REGION" \
-    -var="state_bucket=$STATE_BUCKET" \
-    -var="tenant_id=$TENANT_ID" \
-    -var="enable_app=true" \
-    -var="backend_image=placeholder" \
+  # cloud_run_deletion_protection defaults to true (see
+  # terraform/tenant/variables.tf) so that a stray `terraform apply` can never
+  # silently drop the Cloud Run service. Destroying on purpose means turning
+  # it off first, in its own apply — Terraform refuses to destroy a
+  # google_cloud_run_v2_service while deletion_protection=true is the value in
+  # state. Same apply-then-destroy pattern as destroy_platform below; the
+  # override is a -var on these two commands only, never a change to the default.
+  local tenant_vars=(
+    -var-file="$TFVARS"
+    -var="project_id=$PROJECT_ID"
+    -var="region=$REGION"
+    -var="state_bucket=$STATE_BUCKET"
+    -var="tenant_id=$TENANT_ID"
+    -var="enable_app=true"
+    -var="backend_image=placeholder"
     -var="frontend_url=https://${planned_site_id}.web.app"
+    -var="cloud_run_deletion_protection=false"
+  )
+
+  # Only when the service is actually in state (phase 2 was applied): with
+  # enable_app=true an untargeted apply on a phase-1-only tenant would CREATE
+  # Cloud Run with the placeholder image instead of relaxing anything. -target
+  # keeps this apply to the one attribute flip.
+  if terraform -chdir="$TF_DIR/tenant" state list | grep -q '^google_cloud_run_v2_service\.backend'; then
+    log_info "Disabling Cloud Run deletion_protection before destroy..."
+    terraform -chdir="$TF_DIR/tenant" apply -input=false -auto-approve \
+      -target='google_cloud_run_v2_service.backend[0]' "${tenant_vars[@]}"
+  else
+    log_info "No Cloud Run service in state; skipping deletion_protection step."
+  fi
+
+  terraform -chdir="$TF_DIR/tenant" destroy -input=false "${tenant_vars[@]}"
 
   log_info "Tenant '$TENANT_ID' destroyed."
   log_warn "Secret Manager secrets were deleted by Terraform, but this does NOT remove:"

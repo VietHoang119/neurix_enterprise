@@ -19,6 +19,16 @@ resource "google_sql_database" "tenant" {
   project  = var.project_id
   instance = local.platform.sql_instance_name
   name     = local.db_name
+
+  # Destroy-order only. Terraform destroys a resource BEFORE the resources
+  # it depends on (reverse of creation order), so this makes the database
+  # get dropped first and google_sql_user.tenant only afterwards. Without
+  # it the two were destroyed in parallel and Cloud SQL rejected the user
+  # delete ("role ... cannot be dropped because some objects depend on it")
+  # while the role still owned/held privileges on objects in the database.
+  # Creation order is unchanged in effect: the user was already created
+  # independently, and the database now simply waits for it.
+  depends_on = [google_sql_user.tenant]
 }
 
 resource "random_password" "db_user" {

@@ -132,10 +132,24 @@ variable "gemini_model_fallbacks" {
   default = "gemini-3.6-flash,gemini-3.5-flash"
 }
 
-variable "allow_unauthenticated" {
-  description = "Grant roles/run.invoker to allUsers on the Cloud Run service. Required in practice — Slack and browser clients call the service directly and auth is enforced inside the app (Slack signature, Firebase ID token) — but can be set false to stand the service up without public access first. NOTE: on a project with the iam.allowedPolicyMemberDomains org policy restricting allUsers, this binding fails at apply time; see docs/DEPLOYMENT_RUNBOOK.md step 11 gotcha #2 for the (manual, time-boxed) org policy override."
-  type        = bool
-  default     = true
+# ---------------------------------------------------------------------------
+# Public access. Slack and the browser frontend both call this service
+# directly (there's no front door to gate at) and auth is enforced inside
+# the app (Slack signature check, Firebase ID token — see cloud_run.tf's
+# `ingress` comment), so the service is normally left reachable without
+# per-caller Cloud Run IAM. There are two, mutually exclusive ways to do
+# that; see cloud_run.tf and deploy/README.md "Public access mode" for the
+# full explanation of both and why the default is what it is.
+# ---------------------------------------------------------------------------
+variable "public_access_mode" {
+  description = "Mechanism used to make the Cloud Run service reachable without per-caller IAM, when enable_app = true. \"iam_check_disabled\" (default): sets the service's own invoker_iam_disabled = true (google_cloud_run_v2_service field; equivalent to `gcloud run deploy --no-invoker-iam-check`) — no allUsers IAM binding is created, so this is unaffected by the iam.allowedPolicyMemberDomains org policy (Domain Restricted Sharing), which blocks granting roles/run.invoker to allUsers. \"allow_unauthenticated\": grants roles/run.invoker to allUsers via google_cloud_run_v2_service_iam_member instead — the original mechanism; use it on a project confirmed not to enforce that policy against allUsers, or where the org has granted an explicit exception. See deploy/README.md \"Public access mode\" for how each was verified and the one org-level policy (constraints/run.managed.requireInvokerIam) that can still block the iam_check_disabled path."
+  type        = string
+  default     = "iam_check_disabled"
+
+  validation {
+    condition     = contains(["iam_check_disabled", "allow_unauthenticated"], var.public_access_mode)
+    error_message = "public_access_mode must be either \"iam_check_disabled\" or \"allow_unauthenticated\"."
+  }
 }
 
 variable "cloud_run_cpu" {

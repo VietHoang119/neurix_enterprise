@@ -481,17 +481,75 @@ phase_frontend() {
     exit 1
   fi
 
-  log_info "Ensuring a Firebase Web App exists for this project..."
-  local app_id
-  app_id="$(gcloud firebase apps list --project="$PROJECT_ID" --filter="displayName:'Neurix ${TENANT_ID}'" --format='value(appId)' 2>/dev/null | head -n1 || true)"
+  # There is no `gcloud firebase apps` command group (gcloud only offers
+  # `gcloud alpha firebase projects create`, which creates a whole new
+  # Firebase project, not a Web App inside this one). `firebase-tools`
+  # (via `npx`, already a dependency for the hosting deploy below) is the
+  # only real CLI surface for Web App create/list/sdkconfig, so it is run
+  # here with `--json` for machine-readable output and parsed with
+  # python3 (already required by this phase) the same way the SDK config
+  # below is parsed.
+  #
+  # Matching convention: a tenant's Web App is identified by an EXACT
+  # displayName match on "Neurix ${TENANT_ID}" (not a substring match —
+  # unlike the old `gcloud ... --filter`, this avoids tenant "pilot"
+  # matching a Web App belonging to tenant "pilot2"). Creation uses the
+  # exact same displayName, so a create-then-list round trip always finds
+  # what it just made. Do not change this convention without also
+  # renaming any Web App already created under the old one.
+  local app_display_name="Neurix ${TENANT_ID}"
+  log_info "Ensuring a Firebase Web App exists for this project (displayName='${app_display_name}')..."
+  local apps_list_json app_id
+  apps_list_json="$(npx --yes firebase-tools --json apps:list WEB --project="$PROJECT_ID")"
+  app_id="$(python3 - "$apps_list_json" "$app_display_name" <<'PYEOF'
+import json
+import sys
+
+data = json.loads(sys.argv[1])
+name = sys.argv[2]
+if data.get("status") != "success":
+    print(f"ERROR: firebase apps:list failed: {data.get('error', 'unknown error')}", file=sys.stderr)
+    sys.exit(1)
+for app in data.get("result", []):
+    if app.get("platform") == "WEB" and app.get("displayName") == name:
+        print(app["appId"])
+        break
+PYEOF
+)"
+
   if [[ -z "$app_id" ]]; then
-    log_info "Creating Firebase Web App 'Neurix ${TENANT_ID}'..."
-    app_id="$(gcloud firebase apps create web "Neurix ${TENANT_ID}" --project="$PROJECT_ID" --format='value(appId)')"
+    log_info "No existing Web App named '${app_display_name}' — creating it..."
+    local create_json
+    create_json="$(npx --yes firebase-tools --json apps:create WEB "$app_display_name" --project="$PROJECT_ID")"
+    app_id="$(python3 - "$create_json" <<'PYEOF'
+import json
+import sys
+
+data = json.loads(sys.argv[1])
+if data.get("status") != "success":
+    print(f"ERROR: firebase apps:create failed: {data.get('error', 'unknown error')}", file=sys.stderr)
+    sys.exit(1)
+print(data["result"]["appId"])
+PYEOF
+)"
+  else
+    log_info "Reusing existing Firebase Web App '${app_display_name}' (appId=${app_id})."
   fi
 
   log_info "Fetching Firebase Web SDK config..."
-  local sdkconfig_json
-  sdkconfig_json="$(gcloud firebase apps sdkconfig web "$app_id" --project="$PROJECT_ID" --format=json)"
+  local sdkconfig_result_json sdkconfig_json
+  sdkconfig_result_json="$(npx --yes firebase-tools --json apps:sdkconfig WEB "$app_id" --project="$PROJECT_ID")"
+  sdkconfig_json="$(python3 - "$sdkconfig_result_json" <<'PYEOF'
+import json
+import sys
+
+data = json.loads(sys.argv[1])
+if data.get("status") != "success":
+    print(f"ERROR: firebase apps:sdkconfig failed: {data.get('error', 'unknown error')}", file=sys.stderr)
+    sys.exit(1)
+print(json.dumps(data["result"]["sdkConfig"]))
+PYEOF
+)"
 
   # Deliberately NOT `local`: the EXIT trap below fires when the whole
   # script process exits, which happens after this function has already

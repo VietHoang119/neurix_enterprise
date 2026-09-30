@@ -469,6 +469,34 @@ explicit manual step: both `provision.sh app` and `provision.sh frontend`
 print a reminder for it. Do this once per GCP project (or once per tenant,
 if a tenant needs its own restriction), before end-to-end sign-in testing.
 
+### Firebase Auth authorized domains (per tenant) — CONFIRMED
+
+**Confirmed required by a live test** (tenant `pilot` on `neurix-org`, Sep
+30) — this is no longer the open question it was earlier in this doc's
+history. Every tenant gets its own Firebase Hosting site, and therefore its
+own `*.web.app` host (see "Firebase Hosting site ID collisions" above);
+Firebase Auth only allows sign-in redirects to land on a host that's on its
+**Authorized domains** list, and a brand-new Hosting site's host is not on
+that list automatically, even though it lives under the same, already-
+enabled Firebase project as every other tenant.
+
+**Symptom if skipped**: sign-in visibly fails with no useful on-screen
+detail — just "Sign-in didn't work" or similar. The actual error only
+appears in the browser's DevTools **Console** tab (not the Network tab,
+where nothing looks obviously wrong):
+```
+The current domain is not authorized for OAuth operations. Add your domain
+(<tenant-id>-<hash>.web.app) to the OAuth redirect domains list...
+```
+
+**Fix, once per tenant** (there is no CLI/Terraform path for this, same as
+the project-level provider toggle above): Firebase Console → project →
+**Authentication** → **Settings** → **Authorized domains** → **Add
+domain** → enter the exact Hosting URL host printed at the end of Phase 5
+(`provision.sh frontend`) → **Add**.
+
+This closes "Open questions for Hoàng" #6 below.
+
 ### Shared-bucket IAM condition (prefix isolation) — UNVERIFIED
 
 `terraform/tenant/storage.tf` grants a tenant's runtime service account
@@ -877,13 +905,14 @@ running.
   mode; it stays genuinely untested by this package until `platform/` is
   applied for real on a throwaway project (the normal flow).
 - **Firebase Auth authorized domains** for a brand-new Hosting site
-  (`<hosting-site-id>.web.app`; see "Firebase Hosting site ID collisions") created under the same, already-in-use Firebase
-  project. Firebase Auth restricts sign-in by authorized domain; whether a
-  new Hosting site's domain needs to be added by hand to the existing
-  project's authorized-domains list (Firebase Console → Authentication →
-  Settings → Authorized domains) before sign-in works for this test tenant
-  is unverified here — check that console page if sign-in fails after the
-  `frontend` phase.
+  (`<hosting-site-id>.web.app`; see "Firebase Hosting site ID collisions")
+  created under the same, already-in-use Firebase project. This is no
+  longer untested in general — see "Known unknowns" → "Firebase Auth
+  authorized domains (per tenant)" above, confirmed required by a live
+  test. It's listed here too because it applies identically to a test
+  tenant provisioned in external/production mode: the new Hosting site's
+  domain must be added by hand to production's existing project
+  authorized-domains list before sign-in works for that test tenant.
 - **The shared-bucket IAM-condition signed-URL isolation** — already listed
   under "Known unknowns" below as unverified in general; it applies
   identically here (`dedicated_bucket = false`, the default, uses the
@@ -1431,9 +1460,12 @@ module):
    build/deploy `neurix-backend` that should be passed as
    `external_cloudbuild_service_account_email`, rather than falling back to
    the project's default Cloud Build service account.
-6. Firebase Auth authorized domains for a new Hosting site under the
-   existing, already-in-use Firebase project — see "Testing a tenant on the
-   existing production platform" → "What this mode does NOT test".
+6. ~~Firebase Auth authorized domains for a new Hosting site under the
+   existing, already-in-use Firebase project~~ — resolved: confirmed
+   required by a live test (tenant `pilot` on `neurix-org`, Sep 30). See
+   "Known unknowns" → "Firebase Auth authorized domains (per tenant)" for
+   the confirmed symptom and fix, and `TENANT_RUNBOOK.md` step 6 for where
+   it's now a formal step in the walkthrough.
 7. `release.sh` re-derives the Cloud SQL instance name (`neurix-db`),
    Artifact Registry repository id (`neurix-backend`), and Cloud Build
    service account (`neurix-cloudbuild@PROJECT...`) from

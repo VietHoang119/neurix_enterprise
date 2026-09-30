@@ -46,7 +46,8 @@ satisfied.
 
 ```
 deploy/
-├── README.md                     # this file
+├── README.md                     # this file — design/rationale/verification log
+├── TENANT_RUNBOOK.md             # step-by-step walkthrough for provisioning one tenant
 ├── terraform/
 │   ├── versions.tf, backend.tf   # reference copies — see note below
 │   ├── platform/                 # once per GCP project
@@ -82,6 +83,12 @@ versions or the backend type, change all three copies together.
 
 ## Prerequisites
 
+For a step-by-step walkthrough of provisioning one tenant end to end
+(exact commands, the manual Slack app clicks, and the real failures hit
+doing this live), see **[`TENANT_RUNBOOK.md`](TENANT_RUNBOOK.md)**. This
+section and the phase table below stay focused on what each phase does and
+why; the runbook is the "do this, then this" sequence.
+
 - **Bash 3.2 or newer.** Every script in `deploy/scripts/` is written to run
   on the stock macOS `/bin/bash` (3.2), so no Homebrew Bash is needed. Keep
   it that way: no `local -n`/`declare -n`, `declare -A`, `mapfile`/`readarray`,
@@ -90,7 +97,13 @@ versions or the backend type, change all three copies together.
 - Terraform >= 1.6, a `google` CLI (`gcloud`, authenticated:
   `gcloud auth login` + `gcloud auth application-default login`), `python3`,
   `npm`, and `firebase-tools` (via `npx firebase-tools`, no global install
-  needed).
+  needed — also needs its own `npx firebase-tools login`, used by phase 5's
+  Firebase Web App creation and the Hosting deploy).
+  **These are three separate, independently-expiring login sessions**
+  (`gcloud auth login`, `gcloud auth application-default login` for
+  Terraform, and `firebase-tools`' own login) — see `TENANT_RUNBOOK.md`
+  step 2 if a command fails with an auth/reauthentication error and it's
+  not obvious which of the three actually expired.
 - A GCS bucket to hold Terraform state (create once, by hand — Terraform
   cannot create the bucket it's about to store its own state in), with
   versioning on so a bad state write is recoverable:
@@ -102,7 +115,10 @@ versions or the backend type, change all three copies together.
 - Copy `terraform/tenants/example.tfvars` to `terraform/tenants/<tenant_id>.tfvars`
   and fill in `project_id`, `state_bucket`, `tenant_id` (never commit the copy
   — `.gitignore` already excludes every `terraform/tenants/*.tfvars` except
-  the two committed `*.tfvars.example` files).
+  the two committed `*.tfvars.example` files). See `TENANT_RUNBOOK.md` step 1
+  before picking `tenant_id` — a common-word id can pass Terraform's own
+  validation and still fail later, at Firebase Hosting site creation (see
+  "Firebase Hosting site ID collisions" below).
 
 (To instead provision a tenant against the existing production platform, see
 "Testing a tenant on the existing production platform" below — it has its
@@ -132,6 +148,12 @@ Two things stay manual no matter what (see "Known unknowns" below): Slack
 app creation/install (phase 3, by design), and enabling the Google sign-in
 provider in Firebase Auth (no reliable CLI/Terraform path — both `app` and
 `frontend` phases print a reminder).
+
+For the exact manual clicks — the Slack app manifest walkthrough (phase 3)
+and wiring the real Cloud Run URLs into the Slack app after phase 5 — see
+`TENANT_RUNBOOK.md` steps 4-5, or `slack/slack-manifest.yml`'s own header
+comment, which `provision.sh`'s `slack-secrets` phase prints verbatim at
+the right time.
 
 ## Releasing code vs changing infrastructure
 
@@ -571,6 +593,19 @@ scripts/destroy.sh all      --project-id ID --tenant-id TID --state-bucket BUCKE
 its own `apply` (Terraform refuses to destroy a `google_sql_database_instance`
 while that's `true`, which is the default — on purpose, so a stray `apply`
 can never silently drop the database), then destroys.
+
+`destroy.sh tenant` does the equivalent for Cloud Run: `cloud_run_deletion_protection`
+also defaults to `true`, so it's flipped to `false` in a targeted `apply`
+before the tenant `destroy` runs — but only if the service is already in
+state (a phase-1-only tenant, never past `migrate`/`app`, has nothing to
+flip; the "No Cloud Run service in state; skipping" log line in that case
+is expected, not an error). Destroying a tenant also drops its Cloud SQL
+database and user in one `terraform destroy` call; those two resources have
+an explicit `depends_on` (`terraform/tenant/main.tf`) forcing the database
+to be dropped before the user, because destroying them in parallel hit
+`role ... cannot be dropped because some objects depend on it` (the role
+still held privileges on the database mid-drop) the first time this was run
+for real.
 
 ## Testing a tenant on the existing production platform
 

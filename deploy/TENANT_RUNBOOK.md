@@ -187,13 +187,25 @@ In the Slack App configuration:
 4. **OAuth & Permissions** → **Reinstall to Workspace** (required after any
    scope or Event Subscriptions change).
 
-## 6. Remaining manual step (once per project, not per tenant)
+## 6. Remaining manual steps
 
-Enable Google Sign-in for Firebase Auth — see README's "Known unknowns" →
-"Firebase Auth Google sign-in provider" for why this has no CLI/Terraform
-path. Firebase Console → project → **Authentication** → **Sign-in method**
-→ **Add provider** → **Google** → **Enable** → set a support email →
-**Save**.
+**Enable Google Sign-in for Firebase Auth** (once per GCP project, not per
+tenant) — see README's "Known unknowns" → "Firebase Auth Google sign-in
+provider" for why this has no CLI/Terraform path. Firebase Console →
+project → **Authentication** → **Sign-in method** → **Add provider** →
+**Google** → **Enable** → set a support email → **Save**.
+
+**Add the tenant's Hosting domain to Authorized domains** (once per
+tenant — confirmed required by a live test, not just theoretical). Firebase
+Console → project → **Authentication** → **Settings** → **Authorized
+domains** → **Add domain** → enter the exact Hosting URL host (e.g.
+`<tenant-id>-<hash>.web.app`, printed at the end of Phase 5) → **Add**.
+Symptom if skipped: "Sign-in didn't work" with no useful on-screen detail —
+the real error only shows in the browser DevTools **Console** tab, not the
+Network tab: `"The current domain is not authorized for OAuth
+operations..."`. Always check the Console tab when sign-in fails silently.
+See README's "Known unknowns" → "Firebase Auth authorized domains (per
+tenant)" for the full writeup.
 
 ## 7. Verify it actually works
 

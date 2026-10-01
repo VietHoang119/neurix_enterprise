@@ -273,8 +273,8 @@ export default function Shell({ user }: { user: User }) {
         </div>
       )}
 
-      {/* 300px | 1fr | 320px over 1fr | 200px on wide screens; one column below. */}
-      <main className="grid min-h-0 flex-1 grid-cols-1 gap-5 px-4 pb-6 sm:px-6 lg:grid-cols-[300px_minmax(0,1fr)_320px] lg:grid-rows-[minmax(0,1fr)_200px]">
+      {/* 300px | 1fr | 320px over 1fr | 144px on wide screens; one column below. */}
+      <main className="grid min-h-0 flex-1 grid-cols-1 gap-5 px-4 pb-6 sm:px-6 lg:grid-cols-[300px_minmax(0,1fr)_320px] lg:grid-rows-[minmax(0,1fr)_144px]">
         <Card className="flex min-h-0 flex-col p-5 lg:col-start-1 lg:row-span-2 lg:row-start-1">
           <div className="mb-2 flex items-baseline justify-between gap-2">
             <h2 className="text-base font-semibold">Knowledge Management</h2>
@@ -319,21 +319,19 @@ export default function Shell({ user }: { user: User }) {
           )}
         </Card>
 
-        <Card className="flex flex-col gap-3 p-5 lg:col-start-2 lg:row-start-2">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <h2 className="flex items-center gap-2 text-base font-semibold">
-              <MessageCircle className="h-4 w-4 text-muted-foreground" />
-              Ask
-            </h2>
-            <WorkspaceLink teamView={teamView} />
-          </div>
-          <p className="text-sm text-muted-foreground">
-            Ask your team's knowledge with <code>/neurix ask &lt;question&gt;</code> in Slack. Answers cite the exact
-            nodes they came from.
+        <Card className="flex flex-row items-center justify-between gap-4 p-4 lg:col-start-2 lg:row-start-2">
+          <h2 className="sr-only">Ask</h2>
+          <p className="flex min-w-0 items-start gap-2 text-sm text-muted-foreground">
+            <MessageCircle className="mt-0.5 h-4 w-4 flex-none text-muted-foreground" />
+            <span>
+              Ask your team's knowledge with <code>/neurix ask &lt;question&gt;</code> in Slack. Answers cite the
+              exact nodes they came from.
+            </span>
           </p>
+          <WorkspaceLink teamView={teamView} />
         </Card>
 
-        <Card className="flex flex-col gap-3 p-5 lg:col-start-3 lg:row-start-2">
+        <Card className="flex flex-col gap-2 p-4 lg:col-start-3 lg:row-start-2">
           <h2 className="text-base font-semibold">Insights</h2>
           <div className="flex divide-x divide-border">
             <Stat value={nodes?.nodes.length ?? "–"} label="nodes" />

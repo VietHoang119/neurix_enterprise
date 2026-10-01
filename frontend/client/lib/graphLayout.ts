@@ -34,6 +34,45 @@ export interface GraphLayout {
   bounds: { x: number; y: number; width: number; height: number };
 }
 
+export interface LabelCandidate {
+  id: string;
+  x: number;
+  y: number;
+  /** Already-truncated label text. */
+  text: string;
+  /** Y of the label's vertical center (node y + its offset below the node/hub). */
+  labelY: number;
+}
+
+/**
+ * Greedily keep labels that don't overlap an already-kept one, in the given
+ * priority order (caller sorts: hubs first, then nodes by degree). Label
+ * width is estimated from character count, since real text metrics aren't
+ * available outside the DOM. This runs once per layout (at zoom level 1);
+ * StaticGraph reveals the rest as the user zooms in, since node spacing
+ * grows with zoom while label font size is counter-scaled to stay constant
+ * on screen.
+ */
+export function selectVisibleLabels(candidates: LabelCandidate[], fontSize = 12): Set<string> {
+  const charWidth = fontSize * 0.62;
+  const lineHeight = fontSize + 6;
+  const placed: { x0: number; x1: number; y0: number; y1: number }[] = [];
+  const visible = new Set<string>();
+  for (const c of candidates) {
+    const halfWidth = Math.max((c.text.length * charWidth) / 2, fontSize);
+    const x0 = c.x - halfWidth;
+    const x1 = c.x + halfWidth;
+    const y0 = c.labelY - lineHeight / 2;
+    const y1 = c.labelY + lineHeight / 2;
+    const overlaps = placed.some((p) => x0 < p.x1 && x1 > p.x0 && y0 < p.y1 && y1 > p.y0);
+    if (!overlaps) {
+      placed.push({ x0, x1, y0, y1 });
+      visible.add(c.id);
+    }
+  }
+  return visible;
+}
+
 // Smallest viewBox (in layout units ≈ px at 1:1) the graph is drawn in.
 const MIN_VIEW_WIDTH = 680;
 const MIN_VIEW_HEIGHT = 400;

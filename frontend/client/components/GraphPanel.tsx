@@ -114,7 +114,15 @@ export default function GraphPanel({
   let body: ReactNode = <p className="text-sm text-muted-foreground">Loading…</p>;
   if (activeGraphTab === "personal" && graph) {
     legend = <PersonalLegend graph={graph} />;
-    body = <StaticGraph graph={graph} showAll={showAll} showKeys={showKeys} controls={showAllToggle} />;
+    body = (
+      <StaticGraph
+        graph={graph}
+        showAll={showAll}
+        showKeys={showKeys}
+        ownerLabel={(node) => (node.shared ? "Shared with you" : "You")}
+        controls={showAllToggle}
+      />
+    );
   } else if (activeGraphTab === "team" && team) {
     if (!team.org) {
       body = (
@@ -130,6 +138,11 @@ export default function GraphPanel({
           showAll={showAll}
           showKeys={showKeys}
           colorFor={(node) => teamColor(node.owner_id)}
+          ownerLabel={(node) => {
+            const member = team.members.find((m) => m.user_id === node.owner_id);
+            if (!member) return "Former member";
+            return member.is_me ? "You" : member.name;
+          }}
           highlightCrossMember
           emptyText="The team space is empty. Add a node from Slack with /neurix share-team."
           controls={showAllToggle}

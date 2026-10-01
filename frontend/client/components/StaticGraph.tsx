@@ -115,6 +115,16 @@ export default function StaticGraph({
   const zoomRef = useRef<d3.ZoomBehavior<SVGSVGElement, unknown> | null>(null);
   const [transform, setTransform] = useState(d3.zoomIdentity);
   const [hovered, setHovered] = useState<HoveredNode | null>(null);
+  // Dragged positions, keyed by node/hub id. Committed (drag-end) only —
+  // matches neurix-ui's D3Graph, which doesn't persist drag positions beyond
+  // the component's own in-memory simulation state, so a resize/refetch of
+  // the graph (the reset effect below) drops them too.
+  const [positions, setPositions] = useState<Record<string, { x: number; y: number }>>({});
+  // Live position of whichever node/hub is actively being dragged, updated
+  // on every pointer move so it visibly tracks the cursor. Kept separate from
+  // `positions` so the expensive label-overlap recompute (which depends on
+  // `positions`) only runs once per drag, at drag end, not every frame.
+  const [dragPreview, setDragPreview] = useState<{ id: string; x: number; y: number } | null>(null);
 
   const visible = useMemo(
     () => visibleConnections(graph, showAll, highlightCrossMember),
@@ -123,30 +133,81 @@ export default function StaticGraph({
   const keys = useMemo(() => (showKeys ? selectKeyHubs(graph.nodes, MAX_KEYS) : []), [graph.nodes, showKeys]);
   const layout = useMemo(() => computeStaticLayout(graph.nodes, visible, keys), [graph.nodes, visible, keys]);
 
+  /** A node/hub's committed position (post drag-end), falling back to its static layout position. */
+  const committedPos = (id: string, x: number, y: number) => positions[id] ?? { x, y };
+  /** Same, but also applying the in-progress drag preview for whichever item is currently being dragged. */
+  const effectivePos = (id: string, x: number, y: number) =>
+    dragPreview?.id === id ? { x: dragPreview.x, y: dragPreview.y } : committedPos(id, x, y);
+
   const safeLabels = useMemo(() => {
-    const hubCandidates: LabelCandidate[] = layout.hubs.map((hub) => ({
-      id: hub.id,
-      x: hub.x ?? 0,
-      y: hub.y ?? 0,
-      text: truncate(hub.text),
-      labelY: (hub.y ?? 0) + 22,
-    }));
+    const hubCandidates: LabelCandidate[] = layout.hubs.map((hub) => {
+      const p = committedPos(hub.id, hub.x ?? 0, hub.y ?? 0);
+      return {
+        id: hub.id,
+        x: p.x,
+        y: p.y,
+        text: truncate(hub.text),
+        labelY: p.y + 22,
+      };
+    });
     const nodeCandidates: LabelCandidate[] = [...layout.nodes]
       .sort((a, b) => b.degree - a.degree)
-      .map((node) => ({
-        id: node.id,
-        x: node.x ?? 0,
-        y: node.y ?? 0,
-        text: truncate(node.title),
-        labelY: (node.y ?? 0) + layout.radius(node) + 16,
-      }));
+      .map((node) => {
+        const p = committedPos(node.id, node.x ?? 0, node.y ?? 0);
+        return {
+          id: node.id,
+          x: p.x,
+          y: p.y,
+          text: truncate(node.title),
+          labelY: p.y + layout.radius(node) + 16,
+        };
+      });
     return selectVisibleLabels([...hubCandidates, ...nodeCandidates]);
-  }, [layout]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layout, positions]);
+
+  // Drag-to-reposition, matching neurix-ui's D3Graph: a d3.drag() behavior
+  // per node. Attached via a stable per-id ref callback (a Map, so it isn't
+  // re-bound on every render) rather than D3Graph's imperative DOM mutation,
+  // since StaticGraph renders from React state. d3-drag's default container
+  // is the dragged element's parentNode; here that's the untransformed <g>
+  // wrapping the nodes/hubs, one level inside the pan/zoom <g>, so
+  // event.x/event.y already come out in graph space — the current zoom scale
+  // and pan offset are accounted for automatically, the same way D3Graph
+  // gets it "for free" from the DOM's own CTM.
+  const dragRefCache = useRef(new Map<string, (el: SVGGElement | null) => void>());
+  const dragBehavior = useMemo(
+    () =>
+      d3
+        .drag<SVGGElement, { id: string }>()
+        .on("drag", (event, d) => {
+          setDragPreview({ id: d.id, x: event.x, y: event.y });
+        })
+        .on("end", (event, d) => {
+          setPositions((prev) => ({ ...prev, [d.id]: { x: event.x, y: event.y } }));
+          setDragPreview(null);
+        }),
+    [],
+  );
+  const getDragRef = (id: string) => {
+    let ref = dragRefCache.current.get(id);
+    if (!ref) {
+      ref = (el) => {
+        if (el) d3.select<SVGGElement, { id: string }>(el).datum({ id }).call(dragBehavior);
+      };
+      dragRefCache.current.set(id, ref);
+    }
+    return ref;
+  };
 
   useEffect(() => {
-    // Reset pan/zoom and any hover state whenever the underlying graph changes shape.
+    // Reset pan/zoom, hover, and any dragged positions whenever the underlying
+    // graph changes shape. Drag positions aren't persisted (neither is
+    // neurix-ui's), so a reload/refetch of the graph drops them, same as zoom.
     setTransform(d3.zoomIdentity);
     setHovered(null);
+    setPositions({});
+    setDragPreview(null);
   }, [graph, showAll, showKeys, highlightCrossMember]);
 
   useEffect(() => {
@@ -225,63 +286,81 @@ export default function StaticGraph({
           </defs>
           <g transform={`translate(${transform.x},${transform.y}) scale(${transform.k})`}>
             <g>
-              {layout.keyLinks.map(({ hub, note }) => (
-                <line
-                  key={`${hub.id}-${note.id}`}
-                  x1={hub.x}
-                  y1={hub.y}
-                  x2={note.x}
-                  y2={note.y}
-                  stroke={KEY_EDGE}
-                  strokeWidth={1}
-                  strokeDasharray="2 3"
-                  strokeOpacity={0.5}
-                />
-              ))}
+              {layout.keyLinks.map(({ hub, note }) => {
+                const h = effectivePos(hub.id, hub.x ?? 0, hub.y ?? 0);
+                const n = effectivePos(note.id, note.x ?? 0, note.y ?? 0);
+                return (
+                  <line
+                    key={`${hub.id}-${note.id}`}
+                    x1={h.x}
+                    y1={h.y}
+                    x2={n.x}
+                    y2={n.y}
+                    stroke={KEY_EDGE}
+                    strokeWidth={1}
+                    strokeDasharray="2 3"
+                    strokeOpacity={0.5}
+                  />
+                );
+              })}
             </g>
             <g>
-              {layout.links.map((link) => (
-                <line
-                  key={`${link.source.id}-${link.target.id}`}
-                  x1={link.source.x}
-                  y1={link.source.y}
-                  x2={link.target.x}
-                  y2={link.target.y}
-                  {...edgeStyle(link, highlightCrossMember)}
-                />
-              ))}
+              {layout.links.map((link) => {
+                const s = effectivePos(link.source.id, link.source.x ?? 0, link.source.y ?? 0);
+                const t = effectivePos(link.target.id, link.target.x ?? 0, link.target.y ?? 0);
+                return (
+                  <line
+                    key={`${link.source.id}-${link.target.id}`}
+                    x1={s.x}
+                    y1={s.y}
+                    x2={t.x}
+                    y2={t.y}
+                    {...edgeStyle(link, highlightCrossMember)}
+                  />
+                );
+              })}
             </g>
             <g>
-              {layout.hubs.map((hub) => (
-                <g key={hub.id} transform={`translate(${hub.x ?? 0},${hub.y ?? 0})`}>
-                  <title>{`Key: ${hub.text} · in ${hub.noteIds.length} nodes`}</title>
-                  <path d={DIAMOND} fill="url(#gradient-key)" stroke={KEY_STROKE} strokeWidth={1.5} />
-                  {labelVisible(hub.id) && (
-                    <text
-                      y={22}
-                      textAnchor="middle"
-                      fill={KEY_LABEL}
-                      fillOpacity={0.85}
-                      fontSize={fontSize}
-                      fontWeight={600}
-                      letterSpacing="0.08em"
-                    >
-                      {truncate(hub.text)}
-                    </text>
-                  )}
-                </g>
-              ))}
+              {layout.hubs.map((hub) => {
+                const pos = effectivePos(hub.id, hub.x ?? 0, hub.y ?? 0);
+                return (
+                  <g
+                    key={hub.id}
+                    ref={getDragRef(hub.id)}
+                    transform={`translate(${pos.x},${pos.y})`}
+                    style={{ cursor: "grab" }}
+                  >
+                    <title>{`Key: ${hub.text} · in ${hub.noteIds.length} nodes`}</title>
+                    <path d={DIAMOND} fill="url(#gradient-key)" stroke={KEY_STROKE} strokeWidth={1.5} />
+                    {labelVisible(hub.id) && (
+                      <text
+                        y={22}
+                        textAnchor="middle"
+                        fill={KEY_LABEL}
+                        fillOpacity={0.85}
+                        fontSize={fontSize}
+                        fontWeight={600}
+                        letterSpacing="0.08em"
+                      >
+                        {truncate(hub.text)}
+                      </text>
+                    )}
+                  </g>
+                );
+              })}
             </g>
             <g>
               {layout.nodes.map((node) => {
                 const r = layout.radius(node);
                 const processing = node.status === "PROCESSING";
+                const pos = effectivePos(node.id, node.x ?? 0, node.y ?? 0);
                 return (
                   <g
                     key={node.id}
-                    transform={`translate(${node.x ?? 0},${node.y ?? 0})`}
+                    ref={getDragRef(node.id)}
+                    transform={`translate(${pos.x},${pos.y})`}
                     opacity={processing ? 0.5 : 1}
-                    style={{ cursor: "pointer" }}
+                    style={{ cursor: "grab" }}
                     onMouseEnter={(e) => showNodeTooltip(node, e)}
                     onMouseMove={(e) => setHovered((h) => (h && h.id === node.id ? { ...h, clientX: e.clientX, clientY: e.clientY } : h))}
                     onMouseLeave={() => setHovered((h) => (h?.id === node.id ? null : h))}

@@ -1,0 +1,71 @@
+# Example tenant tfvars for "Testing a tenant on the existing production
+# platform" (see deploy/README.md) — committed as a template only. Copy this
+# to a new, gitignored file (e.g. terraform/tenants/test1.tfvars) and fill
+# in the real values collected via the read-only lookups in that README
+# section. Never commit the copy — deploy/.gitignore already excludes every
+# terraform/tenants/*.tfvars except the two *.tfvars.example files.
+#
+# This is the one supported way to point tenant/ at the production project
+# (project_id = "neurix-enterprise"): platform_mode = "external" plus every
+# external_* value below. Running this also still requires, at apply time:
+#   - NEURIX_ALLOW_PRODUCTION_PROJECT=yes in the environment
+#   - retyping the tenant_id at an interactive prompt
+# See scripts/lib.sh's guard_tenant_production_opt_in and
+# terraform/tenant/platform_source.tf's production_project_guard.
+#
+# Do NOT put Slack bot token / signing secret values here. Those are added
+# later by scripts/provision.sh directly into Secret Manager, never through
+# a .tfvars file or Terraform state. The Gemini API key is not set at all in
+# this mode — see external_gemini_api_key_secret_id below.
+
+project_id   = "neurix-enterprise" # the production project — only valid with platform_mode = "external" below
+region       = "asia-southeast1"
+state_bucket = "REPLACE_WITH_YOUR_TEST_TF_STATE_BUCKET" # see deploy/README.md "State bucket bootstrap"
+
+tenant_id        = "test1"
+dedicated_bucket = false
+
+# Optional: override the Firebase Hosting site ID. Leave commented out to use
+# the computed default ("<tenant_id>-<8 hex chars derived from project_id>").
+# Set it only if the computed default collides with a site someone else owns
+# (Hosting site IDs are globally unique across all of Firebase; Google reports
+# a collision as a generic "Invalid name" error). 4-30 chars, [a-z0-9-].
+# hosting_site_id = "acme-pilot-web"
+
+platform_mode = "external"
+
+# Collect every value below with the read-only gcloud/firebase commands in
+# deploy/README.md "Testing a tenant on the existing production platform"
+# BEFORE running any script — none of these are guessed or assumed.
+external_sql_instance_name            = "neurix-enterprise-db"
+external_sql_instance_connection_name = "neurix-enterprise:asia-southeast1:neurix-enterprise-db"
+external_artifact_registry_repository = "REPLACE_WITH_gcloud_artifacts_repositories_list_OUTPUT"
+external_shared_raw_bucket_name       = "REPLACE_WITH_EXISTING_SHARED_BUCKET_NAME"
+external_gemini_api_key_secret_id     = "REPLACE_WITH_EXISTING_GEMINI_SECRET_ID"
+external_firebase_project_id          = "neurix-enterprise"
+# Optional — leave unset to use the project's default Cloud Build service
+# account instead (see scripts/provision.sh's migrate phase).
+external_cloudbuild_service_account_email = ""
+# Optional — Cloud Build source-staging bucket (name only). Production does
+# not have one; leave unset to fall back to the project's default bucket.
+external_build_staging_bucket = ""
+
+# Leave enable_app at its default (false) for Terraform phase 1. Pass
+# -var enable_app=true -var backend_image=... -var frontend_url=...
+# explicitly for phase 2 (scripts/provision.sh does this for you) — see
+# deploy/README.md.
+
+# ---------------------------------------------------------------------------
+# Conservative resource limits — this is a TEST tenant sharing the
+# production db-g1-small instance's small connection budget with the real
+# neurix-backend service. Keep these low; there is no reason for a test
+# tenant to scale up.
+# ---------------------------------------------------------------------------
+cloud_run_min_instances = 0
+cloud_run_max_instances = 1
+
+db_pool_size    = 2
+db_max_overflow = 3
+
+gemini_model           = "gemini-3.6-flash"
+gemini_model_fallbacks = "gemini-3.6-flash,gemini-3.5-flash"

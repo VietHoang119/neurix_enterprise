@@ -1,0 +1,29 @@
+# Terraform state and local cache — the real state lives in GCS.
+**/.terraform/
+**/.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+crash.log
+crash.*.log
+
+# Real tenant configuration. Only the committed *.tfvars.example templates
+# (terraform/tenants/example.tfvars, terraform/tenants/test1.tfvars.example)
+# are tracked; every real terraform/tenants/*.tfvars file (note: no
+# ".example" suffix) contains a real project_id/tenant_id — or, for the
+# production-testing template, external_* production values — and must
+# never be committed. *.tfvars.example is untouched by the pattern below
+# (it doesn't end in exactly ".tfvars"), so no explicit exception is needed
+# for it.
+terraform/tenants/*.tfvars
+!terraform/tenants/example.tfvars
+
+# Anything a script might write locally while provisioning (downloaded
+# Firebase SDK config, tfplan binaries, etc). None of this should ever be
+# committed — it can contain secrets or tenant-identifying data.
+*.tfplan
+firebase-config*.json
+*.env.tenant
+/scripts/.provision-state/
+__pycache__/
+*.pyc

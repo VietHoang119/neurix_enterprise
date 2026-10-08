@@ -1,0 +1,99 @@
+# Slack App Manifest TEMPLATE — documentation only, not consumed by any
+# script in this package. Slack app creation and installation are
+# deliberately manual (a real admin has to click "Install"); see
+# deploy/README.md phase 3 and scripts/provision.sh's slack-secrets phase,
+# which prints the steps below when you run it.
+#
+# HOW TO USE:
+#   1. Go to https://api.slack.com/apps -> "Create New App" -> "From an app
+#      manifest" -> pick the target workspace -> paste this file's contents
+#      (YAML) into the manifest editor. Adjust display_information.name for
+#      the tenant if you like.
+#   2. IMPORTANT — do this step BEFORE creating the app: the
+#      slash_commands.url and oauth_config.redirect_urls below are
+#      placeholders (host replace-with-cloud-run-url.example.com — a
+#      syntactically valid hostname; underscores are NOT valid in DNS
+#      hostnames and make Slack reject the manifest with "We can't translate
+#      a manifest with errors"). Slack does not actively verify these at
+#      creation time, so the app can be created with placeholders and
+#      fixed up afterwards — but do NOT add an
+#      `event_subscriptions` block yet (see step 4): Slack DOES actively
+#      verify an Event Subscriptions request_url with a live challenge/
+#      response the moment you try to save one, and the Cloud Run service
+#      does not exist yet at this point in the flow (Terraform phase 2 /
+#      provisioning phase 4 runs after this).
+#   3. Create the app, then install it to the workspace (OAuth & Permissions
+#      -> Install to Workspace). Copy the Bot User OAuth Token (xoxb-...)
+#      and, from Basic Information -> App Credentials, the Signing Secret.
+#      scripts/provision.sh's slack-secrets phase will prompt for both and
+#      store them in Secret Manager.
+#   4. After scripts/provision.sh's frontend phase (phase 5) prints the real
+#      Cloud Run URL and the three Slack URLs, go back into this app's
+#      configuration (or re-paste an updated copy of this manifest with the
+#      real URLs substituted) and set:
+#        - Slash Commands -> /neurix -> Request URL
+#        - Interactivity & Shortcuts -> Request URL
+#        - Event Subscriptions -> on, Request URL (Slack will challenge it
+#          live here — the backend answers automatically, see
+#          routers/slack.py)
+#      Reinstall the app to the workspace after any scope or URL change.
+#   5. App Home -> enable the Messages tab and tick "Allow users to send
+#      Slash commands and messages from the messages tab" (not expressible
+#      in this manifest version — set it manually in the UI), otherwise
+#      users can't DM files to the bot.
+#
+# Scopes and events below match what backend/routers/slack.py and
+# backend/services/slack/ actually use as of this writing (see
+# docs/DEPLOYMENT_RUNBOOK.md steps 14 and 16). If the backend adds a new
+# Slack API call, update this file and re-check scopes against Slack's own
+# docs for that method — this template is not automatically kept in sync.
+
+display_information:
+  name: Neurix
+
+features:
+  bot_user:
+    display_name: neurix
+    always_online: true
+
+  slash_commands:
+    - command: /neurix
+      url: https://replace-with-cloud-run-url.example.com/slack/commands
+      description: Save, ask, and manage your Neurix second brain from Slack
+      usage_hint: "ask <question> | file | raw-access"
+      should_escape: false
+
+oauth_config:
+  # Only needed if you're using the optional "Add to Slack" OAuth install
+  # flow (SLACK_CLIENT_ID / SLACK_CLIENT_SECRET / SLACK_OAUTH_REDIRECT_URI —
+  # see docs/DEPLOYMENT_RUNBOOK.md step 16). Not required for a single
+  # manual install via "Install to Workspace"; remove this block if unused.
+  redirect_urls:
+    - https://replace-with-cloud-run-url.example.com/slack/oauth/callback
+  scopes:
+    bot:
+      - commands
+      - chat:write
+      - files:read
+      - im:write
+      - im:history
+      - users:read
+      - users:read.email
+
+settings:
+  interactivity:
+    is_enabled: true
+    request_url: https://replace-with-cloud-run-url.example.com/slack/interactions
+
+  # Add this block yourself, in the Slack UI, only once the Cloud Run URL is
+  # real and reachable (see step 2/4 above) — Slack verifies it live:
+  #
+  # event_subscriptions:
+  #   request_url: https://replace-with-cloud-run-url.example.com/slack/events
+  #   bot_events:
+  #     - message.im
+  #     - file_shared
+
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false

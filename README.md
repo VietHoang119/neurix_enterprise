@@ -1,10 +1,5 @@
 # Neurix Enterprise
 
-GCP foundation for Neurix Enterprise (AI Builder Cup 2026), forked from
-`neurix` (backend) and `neurix-ui` (frontend). Week 1 was infrastructure
-only; Week 2 adds Slack ingest + ask and a minimal web shell (personal
-scope only — no org/team/share features yet).
-
 ## Web UI polish (dark dashboard)
 
 - **Dashboard**: dark theme app-wide, using neurix-ui's tokens (Tailwind +
